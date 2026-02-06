@@ -85,7 +85,7 @@ class Packet:
         Encode packet to bytes (without preamble).
 
         Returns:
-            12 bytes: sync_word (2) + time_remaining (4) + counter (2) + crc (2)
+            10 bytes: sync_word (2) + time_remaining (4) + counter (2) + crc (2)
         """
         # Pack: sync (2), time (4), counter (2)
         payload = struct.pack(
@@ -107,19 +107,19 @@ class Packet:
         Decode packet from bytes (without preamble).
 
         Args:
-            data: 12 bytes containing sync, time, counter, and crc
+            data: 10 bytes containing sync, time, counter, and crc
 
         Returns:
             Packet if valid, None if CRC check fails
         """
-        if len(data) != 12:
+        if len(data) != 10:
             return None
 
         # Unpack
         sync_word, time_remaining, counter, crc = struct.unpack(">HIHH", data)
 
         # Verify CRC
-        payload = data[:10]  # everything except CRC
+        payload = data[:8]  # sync + time + counter (no CRC)
         if not CRC16CCITT.verify(payload, crc):
             return None
 

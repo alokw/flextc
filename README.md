@@ -124,3 +124,24 @@ MIT
 ## Contributing
 
 Contributions welcome! Please open issues or PRs.
+
+
+
+
+
+Next Steps to Use
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Generate a 5-minute countdown file
+python cli/encode.py 5m -o countdown.wav
+
+# Test decode from the file
+python cli/decode.py -i countdown.wav
+
+# Decode live audio
+python cli/decode.py
+
+# List available devices
+python cli/decode.py --list-devices

@@ -6,7 +6,7 @@ import array
 import math
 import wave
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import soundfile as sf
@@ -124,9 +124,8 @@ class RLTCEncoder:
 
         # Calculate timing
         interval_ms = 1000.0 / packet_rate_hz
-        total_samples = int(self.sample_rate * (duration_ms / 1000.0))
 
-        # Generate samples
+        # Generate packets
         all_samples = []
         packet_counter = 0
 
@@ -141,17 +140,8 @@ class RLTCEncoder:
 
             packet_counter += 1
 
-        # Combine packets with proper spacing
-        samples_per_packet = int(self.sample_rate / packet_rate_hz)
-        result = np.zeros(total_samples)
-
-        position = 0
-        for packet_samples in all_samples:
-            # Place packet
-            packet_len = len(packet_samples)
-            if position + packet_len <= total_samples:
-                result[position:position + packet_len] = packet_samples
-            position += samples_per_packet
+        # Concatenate all packets (they will be back-to-back)
+        result = np.concatenate(all_samples)
 
         # Apply amplitude
         result = result * amplitude
@@ -160,7 +150,7 @@ class RLTCEncoder:
 
     def generate_to_file(
         self,
-        output_path: str | Path,
+        output_path: Union[str, Path],
         duration_ms: int,
         packet_rate_hz: float = PACKET_RATE,
         amplitude: float = 0.7,
