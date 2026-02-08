@@ -23,6 +23,84 @@ from ttrrtt.biphase import BiphaseMDecoder
 _logger = logging.getLogger(__name__)
 
 
+class OSCBroadcaster:
+    """
+    OSC broadcaster for sending timecode data.
+
+    Broadcasts timecode as a string in the format "HH:MM:SS:FF" or "HH:MM:SS;FF" (for drop-frame).
+    Uses the path /ttrrtt/ltc or /ttrrtt/count based on direction.
+    """
+
+    def __init__(self, address: str = "255.255.255.255", port: int = 9988):
+        """
+        Initialize OSC broadcaster.
+
+        Args:
+            address: IP address or hostname for OSC broadcast (default: 255.255.255.255)
+            port: UDP port for OSC (default: 9988)
+        """
+        self.address = address
+        self.port = port
+        self._client = None
+        self._enabled = False
+
+    def enable(self):
+        """Enable OSC broadcasting."""
+        try:
+            from pythonosc import udp_client
+            self._client = udp_client.UDPClient(self.address, self.port)
+            self._enabled = True
+            _logger.info(f"OSC broadcasting enabled to {self.address}:{self.port}")
+        except ImportError:
+            _logger.warning("python-osc not installed. Install with: pip install python-osc")
+            self._enabled = False
+        except Exception as e:
+            _logger.error(f"Failed to initialize OSC client: {e}")
+            self._enabled = False
+
+    def disable(self):
+        """Disable OSC broadcasting and close connection."""
+        self._enabled = False
+        if self._client is not None:
+            try:
+                # python-osc UDPClient doesn't have an explicit close method
+                # Just clear the reference
+                self._client = None
+            except Exception:
+                pass
+
+    def send_timecode(self, tc: Timecode):
+        """
+        Send timecode via OSC.
+
+        Args:
+            tc: Timecode object to broadcast
+        """
+        if not self._enabled or self._client is None:
+            return
+
+        try:
+            # Format timecode as string (HH:MM:SS:FF or HH:MM:SS;FF for drop-frame)
+            separator = ";" if tc.is_drop_frame else ":"
+            tc_string = f"{tc.hours:02d}:{tc.minutes:02d}:{tc.seconds:02d}{separator}{tc.frames:02d}"
+
+            # Determine OSC path based on direction
+            path = "/ttrrtt/ltc" if tc.count_up else "/ttrrtt/count"
+
+            # Send OSC message
+            from pythonosc import udp_client
+            # Build and send OSC message
+            builder = udp_client.OscMessageBuilder(address=path)
+            builder.add_arg(tc_string)
+            msg = builder.build()
+            self._client.send(msg)
+
+        except Exception as e:
+            # Don't spam logs - only log once per error type ideally
+            # For now, just log on error
+            _logger.debug(f"OSC send failed: {e}")
+
+
 class Decoder:
     """
     SMPTE/LTC decoder with countdown detection.
@@ -633,6 +711,23 @@ Direction is indicated by bit 60:
         action="store_true",
         help="Verbose output with detailed logging",
     )
+    parser.add_argument(
+        "--osc",
+        action="store_true",
+        help="Enable OSC broadcasting of timecode",
+    )
+    parser.add_argument(
+        "--osc-address",
+        type=str,
+        default="255.255.255.255",
+        help="OSC broadcast address (default: 255.255.255.255)",
+    )
+    parser.add_argument(
+        "--osc-port",
+        type=int,
+        default=9988,
+        help="OSC UDP port (default: 9988)",
+    )
 
     args = parser.parse_args()
 
@@ -724,6 +819,15 @@ Direction is indicated by bit 60:
     print("Press Ctrl+C to stop.")
     print("-" * 40)
 
+    # Initialize OSC broadcaster if enabled
+    osc_broadcaster = None
+    if args.osc:
+        osc_broadcaster = OSCBroadcaster(address=args.osc_address, port=args.osc_port)
+        osc_broadcaster.enable()
+        print(f"OSC broadcasting: {args.osc_address}:{args.osc_port}")
+        print(f"  Paths: /ttrrtt/ltc, /ttrrtt/count")
+        print("-" * 40)
+
     decoder = Decoder(
         sample_rate=args.sample_rate,
         frame_rate=args.frame_rate,
@@ -748,6 +852,10 @@ Direction is indicated by bit 60:
 
             tc = decoder.get_timecode()
             stats = decoder.get_statistics()
+
+            # Send via OSC if enabled
+            if tc and osc_broadcaster:
+                osc_broadcaster.send_timecode(tc)
 
             # Check if we're in detection mode
             is_detecting = decoder._in_detection_mode or decoder.biphase is None
@@ -781,6 +889,8 @@ Direction is indicated by bit 60:
         sys.exit(1)
     finally:
         decoder.stop()
+        if osc_broadcaster:
+            osc_broadcaster.disable()
 
 
 if __name__ == "__main__":

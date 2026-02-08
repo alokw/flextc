@@ -238,6 +238,9 @@ ttrrtt-decode -r 30
 
 # Verbose output with statistics
 ttrrtt-decode -v
+
+# Broadcast timecode via OSC
+ttrrtt-decode -d 2 -c 1 --osc --osc-address 127.0.0.1
 ```
 
 **File decoding output example:**
@@ -286,6 +289,31 @@ Example output:
 **Note the separator difference:**
 - `:` (colon) = Non-drop frame timecode (HH:MM:SS:FF)
 - `;` (semicolon) = Drop-frame timecode (HH:MM:SS;FF)
+
+### OSC Broadcasting
+
+The decoder can broadcast decoded timecode via OSC (Open Sound Control) for integration with other systems. This allows software like show control systems, DAWs, or custom applications to receive and display the timecode.
+
+**Important:** OSC broadcasts are sent periodically (approximately every 100ms), **not on every frame**. This feature is intended for display and reference purposes only and should **not** be used for frame-accurate triggering or synchronization.
+
+```bash
+# Broadcast timecode via OSC to localhost
+ttrrtt-decode -d 2 -c 1 --osc --osc-address 127.0.0.1
+
+# Broadcast to a specific IP and port
+ttrrtt-decode --osc --osc-address 192.168.1.100 --osc-port 9999
+```
+
+**OSC Options:**
+- `--osc` - Enable OSC broadcasting
+- `--osc-address` - Target IP address (default: 255.255.255.255 for broadcast)
+- `--osc-port` - UDP port (default: 9988)
+
+**OSC Paths:**
+- `/ttrrtt/ltc` - Sent when counting up (standard SMPTE mode)
+- `/ttrrtt/count` - Sent when counting down (countdown mode)
+
+**Message Format:** Single string argument in format `HH:MM:SS:FF` or `HH:MM:SS;FF` (for drop-frame).
 
 ## Compatibility
 
