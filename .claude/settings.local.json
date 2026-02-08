@@ -4,7 +4,29 @@
       "Bash(git init:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(git -C /Users/outbox/Documents/GitHub/ttrrtt checkout cli/encode.py)",
+      "Bash(git -C /Users/outbox/Documents/GitHub/ttrrtt checkout cli/decode.py)",
+      "Bash(PYTHONWARNINGS=ignore::RuntimeWarning python3 -m ttrrtt.encoder:*)",
+      "Bash(pip3 install:*)",
+      "Bash(ttrrtt-encode:*)",
+      "Bash(ttrrtt-decode:*)",
+      "Bash(for:*)",
+      "Bash(do)",
+      "Bash(echo:*)",
+      "Bash(done)",
+      "Bash(defaults read:*)",
+      "Bash(timeout:*)",
+      "Bash(git clone:*)",
+      "Bash(git checkout:*)",
+      "Bash(pip uninstall:*)",
+      "Bash(pip install:*)",
+      "Bash(/Library/Frameworks/Python.framework/Versions/3.9/bin/pip:*)",
+      "Bash(pip3 uninstall:*)",
+      "Bash(ffprobe:*)",
+      "Bash(sfinfo:*)",
+      "Bash(ls:*)"
     ]
   }
 }

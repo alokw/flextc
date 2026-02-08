@@ -1,5 +1,5 @@
 """
-RLTC - Reverse Linear Timecode
+TTRRTT - SMPTE-Compatible Bidirectional Timecode
 Setup configuration.
 """
 
@@ -21,22 +21,22 @@ if requirements_file.exists():
     ]
 
 setup(
-    name="rltc",
+    name="ttrrtt",
     version="0.1.0",
-    description="A robust FSK-based countdown timecode system",
+    description="SMPTE/LTC-compatible bidirectional timecode system",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    author="RLTC Contributors",
+    author="TTRRTT Contributors",
     license="MIT",
     packages=find_packages(),
     install_requires=requirements,
+    python_requires=">=3.9",
     entry_points={
         "console_scripts": [
-            "rltc_encode=cli.encode:main",
-            "rltc_decode=cli.decode:main",
+            "ttrrtt-encode=ttrrtt.encoder:main",
+            "ttrrtt-decode=ttrrtt.decoder:main",
         ],
     },
-    python_requires=">=3.9",
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
@@ -45,7 +45,7 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
-        "Programming Language :: Python :: :: 3.12",
+        "Programming Language :: Python :: 3.12",
         "Topic :: Multimedia :: Sound/Audio",
         "Topic :: System :: Networking",
     ],
