@@ -2,7 +2,7 @@
 
 A SMPTE/LTC-compatible timecode system that supports both standard count-up timecode and countdown mode. Uses native Biphase-M (Manchester) encoding for compatibility with standard SMPTE equipment.
 
-This package includes a python-based encoder that can be used to create audio files with SMPTE-compliant timecode, as well as a python-based decoder that can decode audio files, or use a live input. Additionally, when decoding from a live input, timecode can be distributed as an OSC string for easy feedback into other control systems.
+This package includes a Python-based encoder that can be used to create audio files with SMPTE-compliant timecode, as well as a Python-based decoder that can decode audio files or use a live input. Additionally, when decoding from a live input, timecode can be distributed as an OSC string for easy feedback into other control systems.
 
 <a href="https://www.buymeacoffee.com/alokw" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="41" width="174"></a>
 
@@ -31,7 +31,6 @@ Both modes produce valid SMPTE/LTC audio that can be read by standard decoders. 
 
 ### Physical Layer
 - **Encoding**: Biphase-M (Manchester) per SMPTE 12M / EBU Tech 3185
-- **Frame rate**: 24, 25, 29.97 (drop-frame), or 30 fps
 - **Sample rate**: 48 kHz (default) or 44.1 kHz
 - **Bit rate**: 80 × frame_rate (e.g., 2400 bits/sec at 30 fps)
 
@@ -63,11 +62,13 @@ Bit 60 of the frame indicates the timecode direction (TTRRTT extension):
 - **Bit 60 = 0**: Counting up (standard SMPTE mode - default)
 - **Bit 60 = 1**: Counting down (countdown mode)
 
-Bit 60 is the first bit of user bits field 8, which is reserved for future use in standard SMPTE. This avoids conflicts with the polarity correction bit (27) and binary group flags (43, 59) that are part of the SMPTE specification.
-
-This allows a single decoder to handle both standard SMPTE timecode and TTRRTT countdown streams.
+Bit 60 is the first bit of user bits field 8, which is reserved for future use in standard SMPTE. This allows a single decoder to handle both standard SMPTE timecode and TTRRTT countdown streams.
 
 **Note:** When decoding from files, the direction is determined by comparing the first and last timecode values, not solely by bit 60. This ensures compatibility with standard LTC files that may have bit 60 set to arbitrary values.
+
+### Beyond 24-Hour Encoding
+
+While the SMPTE specification includes a binary group flag at bit 27 that indicates "timecode exceeds 24 hours" (using a special 24-bit format), this encoder does not set that flag. Instead, it continues encoding linearly beyond 24 hours using the standard format. These files can be read by decoders that ignore or do not check the 24-hour flag, including this decoder and many hardware devices.
 
 ## Installation
 
@@ -82,16 +83,12 @@ pip install -e .
 
 ## Usage
 
-### Console Commands (Recommended)
-
-The package installs two console commands that avoid Python module warnings:
+### Console Commands
 
 ```bash
 # Encode timecode (output filename auto-generated if -o not specified)
 ttrrtt-encode 5m                      # Generates: ltc_30fps_5m.wav
-
-# Encode countdown
-ttrrtt-encode 5m --countdown          # Generates: ltc_30fps_countdown_5m.wav
+ttrrtt-encode 5m --countdown          # Generates: count_30fps_5m.wav
 
 # Or specify custom output
 ttrrtt-encode 5m -o my_file          # Creates: my_file.wav
@@ -104,117 +101,59 @@ ttrrtt-encode --help
 ttrrtt-decode --help
 ```
 
-### Python Module Usage
-
-You can also use the encoder/decoder as Python modules (may produce warnings when run from the package directory):
+### Encoder
 
 ```bash
-python -m ttrrtt.encoder 5m -o output.wav
-python -m ttrrtt.decoder -i output.wav
-```
-
-### Frame Rates
-
-The encoder supports the following frame rates:
-
-| Frame Rate | Option | Description |
-|------------|--------|-------------|
-| 23.98 fps | `-r 23.98` | Film (24 * 1000/1001), HD video |
-| 24 fps | `-r 24` | Film production |
-| 25 fps | `-r 25` | PAL video |
-| 29.97 fps | `-r 29.97` | NTSC timecode |
-| 30 fps | `-r 30` | Standard audio/video (default) |
-
-**Default**: 30 fps non-drop at 48 kHz sample rate
-
-#### Drop-Frame vs Non-Drop
-
-**Drop-frame mode** (`--drop-frame` flag):
-- Compensates for the difference between nominal (30) and actual (29.97) frame rate
-- Skips frame numbers 0 and 1 at the start of every minute except multiples of 10 minutes
-- Use for NTSC video to match real-time clock
-
-**29.97 non-drop** (`-r 29.97`):
-- Encodes with bit 10 = 0 (no drop-frame flag)
-- Slight drift from real-time clock over time
-- This is the default when using `-r 29.97` without `--drop-frame`
-
-**29.97 drop-frame** (`-r 29.97 --drop-frame`):
-- NTSC drop-frame timecode
-- Encodes with bit 10 = 1 (drop-frame flag set)
-- Matches wall-clock time
-
-**30 fps drop-frame** (`-r 30 --drop-frame`):
-- Uses drop-frame encoding at nominal 30 fps
-
-**30 fps non-drop** (`-r 30`):
-- Standard for audio/video post-production
-- Default mode when no frame rate is specified
-
-**23.98 fps non-drop** (`-r 23.98`):
-- Film transfer rate (24 * 1000/1001)
-- Encodes with bit 10 = 0 (no drop-frame flag)
-
-### Encoder (Generate Timecode Audio)
-
-```bash
-# Output filename is auto-generated if -o is not specified
-# Format: ltc_{rate}fps{_drop}_{HHMMSSFF}_{duration}{_countdown}.wav
-ttrrtt-encode 5m                              # Generates: ltc_30fps_5m.wav
-ttrrtt-encode 10s --start 1:00:00:00          # Generates: ltc_30fps_01000000_10s.wav
-ttrrtt-encode 1m -r 29.97 --drop-frame        # Generates: ltc_2997fps_drop_1m.wav
-ttrrtt-encode 30s --countdown                 # Generates: ltc_30fps_countdown_30s.wav
-ttrrtt-encode 1m -r 23.98                     # Generates: ltc_2398fps_1m.wav
-
-# Specify custom output with -o
-ttrrtt-encode 5m -o my_file                  # Creates: my_file.wav (.wav auto-added)
-
-# Specify frame rate (23.98, 24, 25, 29.97, or 30)
-ttrrtt-encode 10m -r 25 -o output_25fps
-ttrrtt-encode 10m -r 23.98 -o output_2398fps
-ttrrtt-encode 10m -r 24 -o output_24fps
-
-# 29.97 non-drop (default for -r 29.97)
-ttrrtt-encode 10m -r 29.97 -o output_2997ndf
-
-# 29.97 drop-frame
-ttrrtt-encode 10m -r 29.97 --drop-frame -o output_2997df
-
-# 30 drop-frame
-ttrrtt-encode 10m -r 30 --drop-frame -o output_30df
+# Basic usage - count-up (default)
+ttrrtt-encode 5m                      # 5 minutes, generates: ltc_30fps_5m.wav
+ttrrtt-encode 1:30                    # 1 min 30 sec, generates: ltc_30fps_1m30s.wav
 
 # Countdown mode
-ttrrtt-encode 5m --countdown -o countdown_5min
+ttrrtt-encode 5m --countdown          # Generates: count_30fps_5m.wav
+
+# Specify custom output
+ttrrtt-encode 5m -o my_file          # Creates: my_file.wav
+
+# Frame rate options
+ttrrtt-encode 10m -r 25              # 25 fps (PAL)
+ttrrtt-encode 10m -r 23.98           # 23.98 fps (film/HD)
+ttrrtt-encode 10m -r 24              # 24 fps (film production)
+ttrrtt-encode 10m -r 29.97           # 29.97 fps non-drop (NTSC)
+ttrrtt-encode 10m -r 29.97 --drop-frame  # 29.97 fps drop-frame
 
 # Start from specific timecode
-ttrrtt-encode 10s --start 1:00:00:00 -o from_1hr
-ttrrtt-encode 1m --start 15:30:00:00 -o from_15_30
+ttrrtt-encode 10s --start 1:00:00:00  # Start from 1 hour
+ttrrtt-encode 1m --start 15:30:00:00  # Start from 15:30:00:00
 
-# Specify sample rate (default: 48000 Hz)
-ttrrtt-encode 5m -s 44100 -o output_44k
-
-# Adjust amplitude (0.0 to 1.0, default: 0.7)
-ttrrtt-encode 5m -a 0.5 -o output_quiet
+# Sample rate and amplitude
+ttrrtt-encode 5m -s 44100            # 44.1 kHz sample rate
+ttrrtt-encode 5m -a 0.5              # Lower amplitude (0.0 to 1.0)
 ```
 
-**Auto-generated filename format:**
-- `ltc_` - prefix
-- `{rate}fps` - frame rate (e.g., `30fps`, `2997fps`, `2398fps`, `24fps`, `25fps`)
-- `{_drop}` - optional suffix for drop-frame mode
-- `{_HHMMSSFF}` - optional start timecode (no "_from" prefix)
-- `{_countdown}` - optional suffix for countdown mode
-- `_{duration}` - duration (e.g., `5m`, `30s`, `1h`, `1h30m`)
-- `.wav` - extension
-
-**Timecode formats:**
+**Timecode Duration Formats:**
 - `10s` = 10 seconds
 - `5m` = 5 minutes
 - `1h` = 1 hour
 - `1:30` = 1 minute 30 seconds
 - `1:30:00` = 1 minute 30 seconds
 - `1:30:00:15` = 1 min 30 sec 15 frames
+- `2h30m` = 2 hours 30 minutes (compound format)
+- `7h6m5s4f` = 7 hours 6 minutes 5 seconds 4 frames (compound format)
 
-### Decoder (Read Timecode from Audio)
+**Timecode Start Formats (--start):**
+- `1:00:00:00` = 1 hour
+- `15:30:00:00` = 15 hours 30 minutes
+- `1h` = 1 hour (also supports compound h/m/s/f notation)
+
+**Auto-generated filename format:**
+- Count-up: `ltc_{rate}fps{_drop}_{start}_{duration}.wav`
+- Countdown: `count_{rate}fps{_drop}_{start}_{duration}.wav`
+- `{rate}` = `30fps`, `2997fps`, `2398fps`, `24fps`, `25fps`
+- `{_drop}` = optional suffix for drop-frame mode
+- `{start}` = optional start timecode (HHMMSSFF format)
+- `{duration}` = duration (e.g., `5m`, `30s`, `1h`, `2h30m`)
+
+### Decoder
 
 ```bash
 # Decode from default audio input (live)
@@ -227,18 +166,12 @@ ttrrtt-decode -d 2
 ttrrtt-decode -d 2 -c 1
 
 # Decode from file
-# When decoding from a file, the decoder reads the entire file to determine:
-# - Start timecode (first valid frame)
-# - End timecode (last valid frame)
-# - Duration (calculated from timecode values)
-# - Direction (determined by comparing start/end timecodes)
-# - Frame rate (auto-detected)
 ttrrtt-decode -i output.wav
 
 # List available audio devices
 ttrrtt-decode --list-devices
 
-# Specify frame rate
+# Specify frame rate (default: auto-detect)
 ttrrtt-decode -r 30
 
 # Verbose output with statistics
@@ -248,7 +181,7 @@ ttrrtt-decode -v
 ttrrtt-decode -d 2 -c 1 --osc --osc-address 127.0.0.1
 ```
 
-**File decoding output example:**
+**File decoding output:**
 ```
 Decoding from file: ltc_2997fps_drop_30s.wav
 ----------------------------------------
@@ -261,22 +194,6 @@ Direction:      Counting up
 Frame rate:     29.97 fps
 ```
 
-### Example Workflow
-
-```bash
-# 1. Generate a 10-second count-up test file
-ttrrtt-encode 10s -o test_countup -v
-
-# 2. Verify it decodes correctly
-ttrrtt-decode -i test_countup.wav
-
-# 3. Generate a countdown test file
-ttrrtt-encode 10s --countdown -o test_countdown -v
-
-# 4. Verify it decodes as countdown
-ttrrtt-decode -i test_countdown.wav
-```
-
 ### Display Indicators
 
 The decoder displays direction with symbols:
@@ -285,13 +202,12 @@ The decoder displays direction with symbols:
 
 Drop-frame timecodes use a semicolon separator before the frame number per SMPTE convention:
 
-Example output:
 ```
 ▼ 00:04:23;15  (packets: 3842)    # Countdown mode (drop-frame)
 ▲ 01:23:45:12  (packets: 5021)    # Count-up mode (non-drop)
 ```
 
-**Note the separator difference:**
+**Separator difference:**
 - `:` (colon) = Non-drop frame timecode (HH:MM:SS:FF)
 - `;` (semicolon) = Drop-frame timecode (HH:MM:SS;FF)
 
@@ -320,26 +236,34 @@ ttrrtt-decode --osc --osc-address 192.168.1.100 --osc-port 9999
 
 **Message Format:** Single string argument in format `HH:MM:SS:FF` or `HH:MM:SS;FF` (for drop-frame).
 
-## Compatibility
+## Frame Rates
 
-### Standard SMPTE Equipment
-- Generated files are valid SMPTE/LTC audio
-- Can be read by standard SMPTE decoders (will show as count-up)
-- Direction flag (bit 60) is ignored by standard equipment
+| Frame Rate | Option | Description | Drop-Frame Support |
+|------------|--------|-------------|-------------------|
+| 23.98 fps | `-r 23.98` | Film (24 × 1000/1001), HD video | No |
+| 24 fps | `-r 24` | Film production | No |
+| 25 fps | `-r 25` | PAL video | No |
+| 29.97 fps | `-r 29.97` | NTSC timecode | Optional (`--drop-frame`) |
+| 30 fps | `-r 30` | Standard audio/video (default) | Optional (`--drop-frame`) |
 
-### Frame Rates
-- **23.98 fps**: Film transfer rate, HD video (use `-r 23.98`)
-- **24 fps**: Film production (use `-r 24`)
-- **25 fps**: PAL video (use `-r 25`)
-- **29.97 fps**: NTSC non-drop by default, use `--drop-frame` for drop-frame
-- **30 fps**: Standard audio/video (default, use `-r 30`)
+### Drop-Frame Mode
 
-**Drop-frame variants**:
-- 29.97 non-drop: `-r 29.97` (default)
-- 29.97 drop-frame: `-r 29.97 --drop-frame`
-- 30 drop-frame: `-r 30 --drop-frame`
+**Drop-frame mode** (`--drop-frame` flag) compensates for the difference between nominal (30) and actual (29.97) frame rate. It skips frame numbers 0 and 1 at the start of every minute except multiples of 10 minutes. Use for NTSC video to match real-time clock.
 
-**Note**: Most non-drop frame rates (23.98, 24, 30, 29.97 NDF) encode with bits 10-11 = `00`. Decoders distinguish them by measuring the actual bit timing from the audio sample rate.
+**Note:** Most non-drop frame rates (23.98, 24, 30, 29.97 NDF) encode with bits 10-11 = `00`. Decoders distinguish them by measuring the actual bit timing from the audio sample rate.
+
+## Tested With
+
+The following hardware and software have been tested with TTRRTT-generated timecode:
+
+| Hardware/Software | Notes |
+|-------------------|-------|
+| **Horita Timecode Reader** | Reads bidirectional timecode up to 24 hours |
+| **Brainstorm Distripalyzer** | Reads forward timecode up to 24 hours |
+| **Horae** | All formats supported |
+| **TouchDesigner** | All formats supported |
+
+If you've tested with other equipment, please submit a PR to add it to this list.
 
 ## Technical Details
 
@@ -361,33 +285,22 @@ This ensures:
 5. Verify sync word (bits 64-79)
 6. Extract timecode and direction flag
 
-## Comparison to Standard SMPTE
-
-| Feature | Standard SMPTE | TTRRTT |
-|---------|----------------|--------|
-| Direction | Forward only | Forward **or** Reverse |
-| Frame rates | 24/25/29.97/30 | 23.98/24/25/29.97/30 |
-| Encoding | Biphase-M | Biphase-M |
-| Duration | ~24 hours | ~24 hours |
-| Bit 60 | User bit (typically 0) | **Direction indicator** (0=count-up, 1=countdown) |
-| Compatibility | Universal | Compatible with standard decoders |
-
-## Robustness Features
+### Robustness Features
 
 1. **Sync word detection** - Reliable frame identification
 2. **Error tolerance** - Up to 2 bit errors in sync word tolerated
 3. **Continuous streaming** - Real-time processing with buffer
 4. **Auto frame rate detection** - From bits 10-11 and timing analysis
-5. **Direction auto-detection** - From bit 60
+5. **Direction auto-detection** - From bit 60 and timecode comparison
 6. **Fractional timing support** - Accurate 29.97/23.98 fps encoding using sample accumulation
 7. **Pause/resume resilience** - Fast recovery from audio interruptions with automatic decoder reset
 8. **Corruption recovery** - Detects and recovers from biphase decoder misalignment
 
-## Decoder State Machine
+### Decoder State Machine
 
 The decoder uses a two-state approach with automatic recovery mechanisms:
 
-### Detection Mode
+**Detection Mode**
 - Entered on startup or when signal is lost
 - Attempts initial lock with just 0.05 seconds of audio (fast detection)
 - Accumulates progressively more data if initial lock fails
@@ -396,47 +309,20 @@ The decoder uses a two-state approach with automatic recovery mechanisms:
 - Clears buffer when signal returns after silence
 - Exits when valid timecodes are found
 
-### Locked Mode
+**Locked Mode**
 - Decoder has frame rate and is processing timecodes continuously
 - **200ms signal loss timeout** for fast recovery from interruptions
 - Biphase decoder maintains state across callbacks for proper frame boundary handling
 - **Automatic decoder reset** on detection of corruption or misalignment
 
-### Corruption Recovery
+**Corruption Recovery**
 
 The decoder automatically detects and recovers from several corruption scenarios:
-
 1. **Stuck Frames**: When the same timecode repeats 5+ times without progress
 2. **Invalid Frames**: When frames are produced but no valid timecodes are decoded (3 consecutive callbacks)
 3. **No Frames**: When strong signal produces no decoded frames (3 consecutive callbacks)
 
 In all cases, the biphase decoder is reset while preserving frame rate knowledge, allowing fast re-synchronization without entering detection mode.
-
-### Pause/Resume Behavior
-
-When audio is interrupted (pause, cable disconnect, etc.):
-
-1. **Signal Loss** (200ms timeout):
-   - Decoder enters detection mode
-   - Biphase decoder is discarded
-   - Waiting for signal... message displayed
-
-2. **Signal Returns**:
-   - Detection buffer is cleared of stale data
-   - Frame rate is re-detected
-   - Decoder locks onto signal and resumes tracking
-
-3. **Fast Pause/Resume** (< 200ms):
-   - Decoder remains in locked mode
-   - Biphase decoder is automatically reset if corrupted
-   - Minimal disruption to timecode tracking
-
-The biphase decoder's internal buffers are preserved during normal operation to ensure frame boundaries are correctly handled across audio callbacks. This allows seamless decoding even when frame boundaries span multiple callbacks.
-
-### Signal Transition Handling
-- **Silence → Signal**: Detection buffer is cleared when signal returns after silence
-- **Signal → Silence**: Samples with signal < 0.01 are skipped entirely
-- **Pause/Resume**: Decoder automatically recovers when audio signal resumes after brief interruptions
 
 ## Debug Logging
 
@@ -461,6 +347,7 @@ Key log messages:
 - soundfile
 - sounddevice
 - scipy (for file resampling in decoder)
+- python-osc (for OSC broadcasting)
 
 ## License
 

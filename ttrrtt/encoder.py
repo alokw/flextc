@@ -238,6 +238,8 @@ def parse_timecode(time_str: str) -> tuple:
     - "90s" -> 90 seconds
     - "5m" -> 5 minutes
     - "1h" -> 1 hour
+    - "2h30m" -> 2 hours 30 minutes
+    - "7h6m5s4f" -> 7 hours 6 minutes 5 seconds 4 frames
 
     Returns:
         tuple: (hours, minutes, seconds, frames)
@@ -263,23 +265,54 @@ def parse_timecode(time_str: str) -> tuple:
             raise ValueError(f"Invalid timecode format: {time_str}")
         return (hours, minutes, seconds, frames)
 
-    # Try unit suffixes
-    if time_str.endswith('s'):
+    # Try unit suffixes (simple case like "30s", "5m", etc.)
+    if time_str.endswith('s') and 'h' not in time_str and 'm' not in time_str:
         seconds = int(time_str[:-1])
         return (0, 0, seconds, 0)
-    elif time_str.endswith('m'):
+    elif time_str.endswith('m') and 'h' not in time_str:
         minutes = int(time_str[:-1])
         return (0, minutes, 0, 0)
-    elif time_str.endswith('h'):
+    elif time_str.endswith('h') and 'm' not in time_str and 's' not in time_str:
         hours = int(time_str[:-1])
         return (hours, 0, 0, 0)
     elif time_str.endswith('f'):
         frames = int(time_str[:-1])
         return (0, 0, 0, frames)
-    else:
-        # Assume seconds if no unit
-        seconds = int(time_str)
-        return (0, 0, seconds, 0)
+
+    # Parse compound format like "2h30m", "7h6m5s4f", "1h30s"
+    hours = minutes = seconds = frames = 0
+    i = 0
+    current_value = ""
+    while i < len(time_str):
+        if time_str[i].isdigit():
+            current_value += time_str[i]
+        elif time_str[i] in 'hmsf':
+            if not current_value:
+                raise ValueError(f"Invalid timecode format: {time_str}")
+            value = int(current_value)
+            current_value = ""
+            if time_str[i] == 'h':
+                hours = value
+            elif time_str[i] == 'm':
+                minutes = value
+            elif time_str[i] == 's':
+                seconds = value
+            elif time_str[i] == 'f':
+                frames = value
+        else:
+            raise ValueError(f"Invalid timecode format: {time_str}")
+        i += 1
+
+    # Handle case where we have a trailing number (assume frames or seconds based on context)
+    if current_value:
+        # If we already have h/m/s components, treat as frames
+        if hours > 0 or minutes > 0 or seconds > 0:
+            frames = int(current_value)
+        else:
+            # Just a number, assume seconds
+            seconds = int(current_value)
+
+    return (hours, minutes, seconds, frames)
 
 
 def main():
@@ -293,6 +326,8 @@ Examples:
   %(prog)s 5m --countdown -o countdown.wav  # 5 minute countdown
   %(prog)s 0:5:30:15 -o test.wav            # 5 min 30 sec 15 frames
   %(prog)s 10s --start 1:00:00:00 -o from_1hr.wav  # Count-up from 1 hour
+  %(prog)s 2h30m -o two_thirty.wav          # 2 hours 30 minutes (h/m/s/f notation)
+  %(prog)s 7h6m5s4f --start 1h              # Start from 1 hour, duration 7h6m5s4f
 
 Timecode formats (duration):
   1:30       = 1 minute 30 seconds
@@ -301,10 +336,13 @@ Timecode formats (duration):
   30s        = 30 seconds
   5m         = 5 minutes
   1h         = 1 hour
+  2h30m      = 2 hours 30 minutes (compound format)
+  7h6m5s4f   = 7 hours 6 minutes 5 seconds 4 frames
 
 Timecode formats (--start option):
   1:00:00:00 = 1 hour
   15:30:00:00 = 15 hours 30 minutes
+  1h        = 1 hour (also supports h/m/s/f notation)
 
 The generated audio is valid SMPTE/LTC that can be read by standard decoders.
 For countdown mode, bit 60 indicates reverse direction.
@@ -386,7 +424,8 @@ For countdown mode, bit 60 indicates reverse direction.
         if not output_path.lower().endswith('.wav'):
             output_path = output_path + '.wav'
     else:
-        # Auto-generate filename: ltc_{rate}fps{_drop}_{start}_{duration}{_countdown}.wav
+        # Auto-generate filename: {prefix}_{rate}fps{_drop}_{start}_{duration}.wav
+        # Prefix is "ltc_" for count-up, "count_" for countdown
         # Format frame rate
         if args.frame_rate == 23.98:
             rate_str = "2398"
@@ -419,10 +458,10 @@ For countdown mode, bit 60 indicates reverse direction.
         if args.start:
             start_str = f"_{start_hours:02d}{start_minutes:02d}{start_seconds:02d}{start_frames:02d}"
 
-        # Direction suffix
-        direction_str = "_countdown" if args.countdown else ""
+        # Prefix based on direction
+        prefix = "count_" if args.countdown else "ltc_"
 
-        output_path = f"ltc_{rate_str}fps{drop_suffix}{start_str}{direction_str}_{duration_str}.wav"
+        output_path = f"{prefix}{rate_str}fps{drop_suffix}{start_str}_{duration_str}.wav"
 
     if args.verbose:
         direction = "countdown" if args.countdown else "count-up"
