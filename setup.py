@@ -1,5 +1,5 @@
 """
-TTRRTT - SMPTE-Compatible Bidirectional Timecode
+FlexTC - SMPTE-Compatible Bidirectional Timecode
 Setup configuration.
 """
 
@@ -21,21 +21,25 @@ if requirements_file.exists():
     ]
 
 setup(
-    name="ttrrtt",
+    name="flextc",
     version="0.1.0",
     description="SMPTE/LTC-compatible bidirectional timecode system",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    author="TTRRTT Contributors",
+    author="FlexTC Contributors",
     license="MIT",
     packages=find_packages(),
     install_requires=requirements,
     python_requires=">=3.9",
     entry_points={
         "console_scripts": [
-            "ttrrtt-encode=ttrrtt.encoder:main",
-            "ttrrtt-decode=ttrrtt.decoder:main",
+            "flextc-encode=flextc.encoder:main",
+            "flextc-decode=flextc.decoder:main",
+            "flextc-gui=flextc.gui:main",
         ],
+    },
+    extras_require={
+        "gui": ["PySide6>=6.0.0"],
     },
     classifiers=[
         "Development Status :: 3 - Alpha",

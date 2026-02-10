@@ -26,7 +26,7 @@ SMPTE/LTC uses 80 bits per frame (per SMPTE 12M / Wikipedia):
 - Bit 58: Clock flag / Binary group flag 1 (external clock sync)
 - Bit 59: Flag (differs by frame rate: BGF0 at 25fps, polarity/BGF at other rates)
 - Bits 60-63: User bits field 8
-  - Bit 60: TTRRTT direction flag (1 = counting up, 0 = counting down)
+  - Bit 60: FlexTC direction flag (1 = counting up, 0 = counting down)
   - Bits 61-63: User bits (part of field 8)
 - Bits 64-79: Sync word (0011 1111 1111 1101)
 
@@ -36,7 +36,7 @@ Frame rate identification via bit 10 (drop frame) and bit 11 (color frame):
 - 10 = 29.97 fps (drop frame)
 - 11 = 30 fps
 
-Direction flag (TTRRTT extension):
+Direction flag (FlexTC extension):
 - Bit 60: 1 = counting up (standard SMPTE), 0 = counting down (countdown mode)
 
 Note on polarity bit (bit 27 at non-25fps rates):
@@ -85,8 +85,15 @@ class Timecode:
 
     def __post_init__(self):
         """Validate and normalize timecode values."""
-        # Clamp values to valid ranges
-        self.hours = max(0, min(self.hours, 23))
+        # Note: We support extended hours encoding up to 639 hours using bits 48-57.
+        # Bits 48-51: units (hours % 10)
+        # Bits 52-57: tens (hours // 10), where bits 52-55 are upper bits and bits 56-57 are lower bits
+        # Hours 0-39 remain fully compatible with standard SMPTE decoders (bits 52-55 = 0000).
+        # Hours 40-639 use FlexTC extended mode (bits 52-55 non-zero).
+        if self.hours < 0:
+            raise ValueError(f"Hours cannot be negative (got {self.hours})")
+        if self.hours > 639:
+            raise ValueError(f"Hours cannot exceed 639 (got {self.hours})")
         self.minutes = max(0, min(self.minutes, 59))
         self.seconds = max(0, min(self.seconds, 59))
 
@@ -217,7 +224,7 @@ class Timecode:
         - Bits 52-55: User bits field 7
         - Bits 56-57: Hours tens (BCD)
         - Bit 58: Clock flag / BGF1
-        - Bit 59: Flag (BGF0 at 25fps, polarity/BGF at other rates) - TTRRTT direction
+        - Bit 59: Flag (BGF0 at 25fps, polarity/BGF at other rates) - FlexTC direction
         - Bits 60-63: User bits field 8
         - Bits 64-79: Sync word (0011 1111 1111 1101)
 
@@ -307,17 +314,33 @@ class Timecode:
         for i in range(4):
             bits[44 + i] = (self.user_bits[5] >> i) & 1
 
-        # Hours units (bits 48-51): Hours % 10 in BCD (LSB first)
+        # Hours encoding (bits 48-57)
+        # Bits 48-51: units digit (hours % 10), LSB first
+        # Bits 52-57: tens digit (hours // 10), can be 0-102
+        #   - Bits 52-55: upper bits of tens (values >= 4 indicate extended mode)
+        #   - Bits 56-57: lower 2 bits of tens (SMPTE BCD position, LSB first)
+        #
+        # For SMPTE compatibility (hours 0-39):
+        #   - Bits 48-51: BCD units (0-9)
+        #   - Bits 56-57: BCD tens (0-3)
+        #   - Bits 52-55: 0000 (indicates standard SMPTE)
+        #
+        # For extended mode (hours 40-1023):
+        #   - Bits 52-55: non-zero (upper bits of tens value)
+        #   - Bits 56-57: lower 2 bits of tens value
+        #   - Standard SMPTE decoders read bits 56-57 only, showing incorrect values
         hour_units = self.hours % 10
+        hour_tens = self.hours // 10
+
+        # Bits 48-51: units (LSB first)
         for i in range(4):
             bits[48 + i] = (hour_units >> i) & 1
 
-        # User bits field 7 (bits 52-55)
+        # Bits 52-55: upper bits of tens (LSB first, bits 2-5 of tens value)
         for i in range(4):
-            bits[52 + i] = (self.user_bits[6] >> i) & 1
+            bits[52 + i] = ((hour_tens >> (i + 2)) & 1)
 
-        # Hours tens (bits 56-57): Hours // 10 in BCD
-        hour_tens = self.hours // 10
+        # Bits 56-57: lower 2 bits of tens (SMPTE BCD position, LSB first)
         bits[56] = hour_tens & 1
         bits[57] = (hour_tens >> 1) & 1
 
@@ -328,9 +351,9 @@ class Timecode:
         bits[59] = 0
 
         # User bits field 8 (bits 60-63)
-        # Bit 60 is used for TTRRTT direction flag, bits 61-63 are user bits
+        # Bit 60 is used for FlexTC direction flag, bits 61-63 are user bits
         # Bit 60 = 0 means count up (standard SMPTE/LTC default)
-        # Bit 60 = 1 means count down (TTRRTT countdown mode)
+        # Bit 60 = 1 means count down (FlexTC countdown mode)
         bits[60] = 0 if self.count_up else 1
         for i in range(1, 4):
             bits[60 + i] = (self.user_bits[7] >> i) & 1
@@ -363,10 +386,20 @@ class Timecode:
             return None
 
         # Verify sync pattern (bits 64-79)
-        # SMPTE/LTC sync word: 0011 1111 1111 1101
-        sync_expected = [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1]
+        # SMPTE/LTC sync word variants (different encoders use different bit patterns)
+        # Standard: 0011 1111 1111 1101 (0x3FFD in our bit ordering)
+        # Alternative: 0011 1111 1111 1111 (0x3FFF - used by some encoders)
+        # The key is the first two bits must be 0011
         sync_actual = bits[64:80]
-        if sync_actual != sync_expected:
+
+        # Check for valid sync patterns
+        # Pattern must start with 0011 and have mostly 1s
+        valid_syncs = [
+            [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1],  # Standard
+            [0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  # Alternative (all 1s after 0011)
+        ]
+
+        if sync_actual not in valid_syncs:
             return None
 
         # Extract frame units (bits 0-3, LSB first)
@@ -406,24 +439,29 @@ class Timecode:
         # Extract minutes tens (bits 40-42)
         min_tens = bits[40] | (bits[41] << 1) | (bits[42] << 2)
 
-        # Extract hours units (bits 48-51, LSB first)
+        # Extract hours (bits 48-57)
+        # Bits 48-51: units digit (hours % 10), LSB first
+        # Bits 52-55: upper bits of tens (bits 2-5 of tens value), LSB first
+        # Bits 56-57: lower 2 bits of tens (SMPTE BCD position), LSB first
         hour_units = sum(bits[48 + i] << i for i in range(4))
+        hour_tens_lower = bits[56] | (bits[57] << 1)
+        hour_tens_upper = sum(bits[52 + i] << (i + 2) for i in range(4))
+        hour_tens = hour_tens_lower | hour_tens_upper
+        hours = hour_tens * 10 + hour_units
 
-        # Extract hours tens (bits 56-57)
-        hour_tens = bits[56] | (bits[57] << 1)
-
-        # Extract direction flag (bit 60 - TTRRTT extension)
+        # Extract direction flag (bit 60 - FlexTC extension)
         # Bit 60 = 0 means count up (standard SMPTE/LTC default)
-        # Bit 60 = 1 means count down (TTRRTT countdown mode)
+        # Bit 60 = 1 means count down (FlexTC countdown mode)
         count_up = bits[60] == 0
 
         # Extract user bits
-        # Note: Field 8 (bits 60-63) has bit 60 used for direction flag
+        # Note: Field 7 (bits 52-55) is now used for extended hours encoding
+        # Field 8 (bits 60-63) has bit 60 used for direction flag
         user_bits = []
-        field_starts = [4, 12, 20, 28, 36, 44, 52, 60]
-        for field_idx in range(8):
+        field_starts = [4, 12, 20, 28, 36, 44, 60]  # Skip field 7 (52-55)
+        for field_idx in range(7):  # Only 7 fields now (field 7 is used for extended hours)
             field_start = field_starts[field_idx]
-            if field_idx == 7:  # Field 8 (bits 60-63)
+            if field_idx == 6:  # Field 8 (bits 60-63)
                 # Bit 60 is direction flag, only use bits 61-63 for user data
                 # Store in lower 3 bits of the field
                 user_bits.append(
@@ -433,7 +471,7 @@ class Timecode:
                 user_bits.append(sum(bits[field_start + i] << i for i in range(4)))
 
         return cls(
-            hours=hour_tens * 10 + hour_units,
+            hours=hours,
             minutes=min_tens * 10 + min_units,
             seconds=sec_tens * 10 + sec_units,
             frames=frame_tens * 10 + frame_units,

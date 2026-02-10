@@ -7,20 +7,71 @@ Biphase-M encoding rules:
 3. Logic 1: No transition in middle
 
 Reference: EBU Tech 3185 / SMPTE 12M
+
+Waveform Types:
+- "square": Instantaneous transitions (fast rise/fall time, ~1μs equivalent)
+- "sine": Smooth sinusoidal transitions (slower rise/fall time, ~25μs equivalent)
 """
 
 import numpy as np
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Literal
+from scipy import signal
+
+
+WaveformType = Literal["square", "sine"]
+
+
+def _square_to_sine(samples: np.ndarray, cutoff_ratio: float = 0.4) -> np.ndarray:
+    """
+    Convert square wave to sine-like waveform using filtering.
+
+    This preserves the zero-crossing timing while smoothing the edges
+    to create a more broadcast-friendly signal.
+
+    Args:
+        samples: Square wave samples
+        cutoff_ratio: Lowpass filter cutoff relative to Nyquist (default 0.4)
+
+    Returns:
+        Smoothed sine-like waveform
+    """
+    # Design a Butterworth lowpass filter to smooth the square wave
+    # The cutoff frequency is set to preserve the fundamental frequency
+    # while attenuating harmonics that create the sharp edges
+    nyquist = 0.5
+    cutoff = cutoff_ratio * nyquist
+    b, a = signal.butter(4, cutoff, btype='low')
+
+    # Apply filter
+    smoothed = signal.filtfilt(b, a, samples)
+
+    # Normalize to maintain original amplitude
+    max_orig = np.max(np.abs(samples))
+    max_smoothed = np.max(np.abs(smoothed))
+    if max_smoothed > 0:
+        smoothed = smoothed * (max_orig / max_smoothed)
+
+    return smoothed.astype(np.float32)
 
 
 class BiphaseMEncoder:
     """
     Biphase-M (Manchester) encoder for SMPTE/LTC.
+
+    Supports two waveform types:
+    - square: Instant transitions (traditional for hardware LTC)
+    - sine: Smooth sinusoidal transitions (broadcast-friendly, reduces harmonics)
     """
 
-    def __init__(self, sample_rate: int = 44100, frame_rate: float = 30.0):
+    def __init__(
+        self,
+        sample_rate: int = 44100,
+        frame_rate: float = 30.0,
+        waveform: WaveformType = "square",
+    ):
         self.sample_rate = sample_rate
         self.frame_rate = frame_rate
+        self.waveform = waveform
         self.bit_rate = 80 * frame_rate
         # Use float for 29.97 fps to maintain correct timing
         # 29.97 fps at 48kHz: 48000 / (80 * 29.97) ≈ 20.02 samples per bit
@@ -41,7 +92,7 @@ class BiphaseMEncoder:
         first_half_level = -self.last_level
 
         if bit == 0:
-            # Logic 0: Single transition at start only (no middle transition)
+            # Logic 0: No middle transition (stays at same level)
             second_half_level = first_half_level
         else:
             # Logic 1: Additional transition in middle
@@ -57,9 +108,9 @@ class BiphaseMEncoder:
         half_samples = total_samples // 2
         other_half = total_samples - half_samples
 
+        # Generate square wave (regardless of waveform type - we'll convert later)
         first_half = np.full(half_samples, first_half_level, dtype=np.float32)
         second_half = np.full(other_half, second_half_level, dtype=np.float32)
-
         return np.concatenate([first_half, second_half])
 
     def encode_frame(self, bits: List[int]) -> np.ndarray:
@@ -72,7 +123,13 @@ class BiphaseMEncoder:
             samples = self.encode_bit(bit)
             all_samples.append(samples)
 
-        return np.concatenate(all_samples)
+        frame_samples = np.concatenate(all_samples)
+
+        # Apply waveform conversion if needed
+        if self.waveform == "sine":
+            frame_samples = _square_to_sine(frame_samples)
+
+        return frame_samples
 
     def encode_timecode(self, timecode_frames: List[List[int]]) -> np.ndarray:
         """Encode multiple frames of timecode."""
@@ -80,7 +137,15 @@ class BiphaseMEncoder:
         for frame_bits in timecode_frames:
             samples = self.encode_frame(frame_bits)
             all_samples.append(samples)
-        return np.concatenate(all_samples)
+
+        result = np.concatenate(all_samples)
+
+        # For sine waveform, we also need to smooth across frame boundaries
+        # Apply a final filter pass to the entire signal
+        if self.waveform == "sine" and len(timecode_frames) > 1:
+            result = _square_to_sine(result)
+
+        return result
 
 
 class BiphaseMDecoder:

@@ -1,6 +1,6 @@
-# TTRRTT - SMPTE-Compatible Bidirectional Timecode
+# FlexTC - SMPTE-Compatible, Flexible, Bi-Directional, Extended Timecode
 
-A SMPTE/LTC-compatible timecode system that supports both standard count-up timecode and countdown mode. Uses native Biphase-M (Manchester) encoding for compatibility with standard SMPTE equipment.
+A SMPTE/LTC backwards-compatible timecode system that supports both standard count-up timecode and countdown mode. Uses native Biphase-M (Manchester) encoding for compatibility with standard SMPTE equipment.
 
 This package includes a Python-based encoder that can be used to create audio files with SMPTE-compliant timecode, as well as a Python-based decoder that can decode audio files or use a live input. Additionally, when decoding from a live input, timecode can be distributed as an OSC string for easy feedback into other control systems.
 
@@ -9,7 +9,7 @@ This package includes a Python-based encoder that can be used to create audio fi
 
 ## Overview
 
-TTRRTT provides two modes of operation:
+FlexTC provides two modes of operation:
 
 1. **Countdown Mode**: Timecode counts down to zero - useful for timers, countdowns, remaining time display
 2. **Count-Up Mode (Standard SMPTE)**: Traditional SMPTE timecode counting up from a specific start time
@@ -58,76 +58,103 @@ Each 80-bit SMPTE/LTC frame contains:
 
 ### Direction Indicator
 
-Bit 60 of the frame indicates the timecode direction (TTRRTT extension):
+Bit 60 of the frame indicates the timecode direction (FlexTC extension):
 - **Bit 60 = 0**: Counting up (standard SMPTE mode - default)
 - **Bit 60 = 1**: Counting down (countdown mode)
 
-Bit 60 is the first bit of user bits field 8, which is reserved for future use in standard SMPTE. This allows a single decoder to handle both standard SMPTE timecode and TTRRTT countdown streams.
+Bit 60 is the first bit of user bits field 8, which is reserved for future use in standard SMPTE. This allows a single decoder to handle both standard SMPTE timecode and FlexTC countdown streams.
 
 **Note:** When decoding from files, the direction is determined by comparing the first and last timecode values, not solely by bit 60. This ensures compatibility with standard LTC files that may have bit 60 set to arbitrary values.
 
 ### Beyond 24-Hour Encoding
 
-While the SMPTE specification includes a binary group flag at bit 27 that indicates "timecode exceeds 24 hours" (using a special 24-bit format), this encoder does not set that flag. Instead, it continues encoding linearly beyond 24 hours using the standard format. These files can be read by decoders that ignore or do not check the 24-hour flag, including this decoder and many hardware devices.
+The SMPTE specification uses only 2 bits for the "hours tens" digit (bits 56-57), which can represent values 0-3, allowing encoding of 0-39 hours in standard SMPTE.
 
-## Installation
+FlexTC implements an **extended hours encoding** using bits 52-55 (user bits field 7) to support up to 639 hours while remaining fully compatible with standard SMPTE decoders for hours 0-39.
+
+#### Encoding Scheme
+
+| Hours Range | Encoding Mode | Bits 52-55 | Bits 56-57 | Standard Decoder Sees |
+|-------------|---------------|------------|------------|----------------------|
+| 0-39 | BCD (SMPTE compatible) | 0000 | 0-3 | Correct hours ✓ |
+| 40-639 | Binary (FlexTC extended) | Non-zero | 0-3 (lower bits of tens) | Incorrect hours |
+
+**How it works:**
+- **Bits 48-51**: Units digit (0-9), same for all modes
+- **Bits 52-55**: Upper bits of tens value (bits 2-5 of `hours // 10`)
+- **Bits 56-57**: Lower 2 bits of tens value (bits 0-1 of `hours // 10`)
+
+For hours 0-39, tens is 0-3, so bits 52-55 are all zero → SMPTE compatible.
+For hours 40-639, tens is 4-63, so bits 52-55 are non-zero → Extended mode.
+
+**Decoding formula:** `hours = tens × 10 + units` where `tens = bits[52-55] << 2 | bits[56-57]`
+
+#### Compatibility
+
+**Hours 0-39**: Fully compatible with all SMPTE decoders (bits 52-55 = 0000)
+
+**Hours 40-639**: Require FlexTC-aware decoder (or another decoder that also looks at bits 52-57 for extended hours); standard SMPTE decoders see only the lower 2 bits of the tens value
+
+## Usage
 
 ```bash
 # Install in editable/development mode (recommended)
 pip install -e .
 
 # This installs the console commands:
-#   ttrrtt-encode  - Generate timecode audio
-#   ttrrtt-decode  - Read timecode from audio
+#   flextc-encode  - Generate timecode audio
+#   flextc-decode  - Read timecode from audio
 ```
-
-## Usage
 
 ### Console Commands
 
 ```bash
 # Encode timecode (output filename auto-generated if -o not specified)
-ttrrtt-encode 5m                      # Generates: ltc_30fps_5m.wav
-ttrrtt-encode 5m --countdown          # Generates: count_30fps_5m.wav
+flextc-encode 5m                      # Generates: ltc_30fps_5m.wav
+flextc-encode 5m --countdown          # Generates: count_30fps_5m.wav
 
 # Or specify custom output
-ttrrtt-encode 5m -o my_file          # Creates: my_file.wav
+flextc-encode 5m -o my_file          # Creates: my_file.wav
 
 # Decode from file
-ttrrtt-decode -i ltc_30fps_5m.wav
+flextc-decode -i ltc_30fps_5m.wav
 
 # Show help
-ttrrtt-encode --help
-ttrrtt-decode --help
+flextc-encode --help
+flextc-decode --help
 ```
 
 ### Encoder
 
 ```bash
 # Basic usage - count-up (default)
-ttrrtt-encode 5m                      # 5 minutes, generates: ltc_30fps_5m.wav
-ttrrtt-encode 1:30                    # 1 min 30 sec, generates: ltc_30fps_1m30s.wav
+flextc-encode 5m                      # 5 minutes, generates: ltc_30fps_5m.wav
+flextc-encode 1:30                    # 1 min 30 sec, generates: ltc_30fps_1m30s.wav
 
 # Countdown mode
-ttrrtt-encode 5m --countdown          # Generates: count_30fps_5m.wav
+flextc-encode 5m --countdown          # Generates: count_30fps_5m.wav
 
 # Specify custom output
-ttrrtt-encode 5m -o my_file          # Creates: my_file.wav
+flextc-encode 5m -o my_file          # Creates: my_file.wav
 
 # Frame rate options
-ttrrtt-encode 10m -r 25              # 25 fps (PAL)
-ttrrtt-encode 10m -r 23.98           # 23.98 fps (film/HD)
-ttrrtt-encode 10m -r 24              # 24 fps (film production)
-ttrrtt-encode 10m -r 29.97           # 29.97 fps non-drop (NTSC)
-ttrrtt-encode 10m -r 29.97 --drop-frame  # 29.97 fps drop-frame
+flextc-encode 10m -r 25              # 25 fps (PAL)
+flextc-encode 10m -r 23.98           # 23.98 fps (film/HD)
+flextc-encode 10m -r 24              # 24 fps (film production)
+flextc-encode 10m -r 29.97           # 29.97 fps non-drop (NTSC)
+flextc-encode 10m -r 29.97 --drop-frame  # 29.97 fps drop-frame
 
 # Start from specific timecode
-ttrrtt-encode 10s --start 1:00:00:00  # Start from 1 hour
-ttrrtt-encode 1m --start 15:30:00:00  # Start from 15:30:00:00
+flextc-encode 10s --start 1:00:00:00  # Start from 1 hour
+flextc-encode 1m --start 15:30:00:00  # Start from 15:30:00:00
 
 # Sample rate and amplitude
-ttrrtt-encode 5m -s 44100            # 44.1 kHz sample rate
-ttrrtt-encode 5m -a 0.5              # Lower amplitude (0.0 to 1.0)
+flextc-encode 5m -s 44100            # 44.1 kHz sample rate
+flextc-encode 5m -a 0.5              # Lower amplitude (0.0 to 1.0)
+
+# Waveform type
+flextc-encode 5m                    # Sine waveform (default, broadcast-friendly)
+flextc-encode 5m --square            # Square waveform (~1μs rise time)
 ```
 
 **Timecode Duration Formats:**
@@ -157,29 +184,70 @@ ttrrtt-encode 5m -a 0.5              # Lower amplitude (0.0 to 1.0)
 
 ```bash
 # Decode from default audio input (live)
-ttrrtt-decode
+flextc-decode
 
 # Decode from specific device
-ttrrtt-decode -d 2
+flextc-decode -d 2
 
 # Decode from specific channel (0=left, 1=right)
-ttrrtt-decode -d 2 -c 1
+flextc-decode -d 2 -c 1
 
 # Decode from file
-ttrrtt-decode -i output.wav
+flextc-decode -i output.wav
 
 # List available audio devices
-ttrrtt-decode --list-devices
+flextc-decode --list-devices
 
 # Specify frame rate (default: auto-detect)
-ttrrtt-decode -r 30
+flextc-decode -r 30
 
 # Verbose output with statistics
-ttrrtt-decode -v
+flextc-decode -v
 
 # Broadcast timecode via OSC
-ttrrtt-decode -d 2 -c 1 --osc --osc-address 127.0.0.1
+flextc-decode -d 2 -c 1 --osc --osc-address 127.0.0.1
 ```
+
+### Graphical Interface (GUI)
+
+FlexTC includes an optional native desktop GUI built with PySide6 (Qt for Python). The GUI provides the same encoding and decoding functionality as the CLI tools with a professional dark-themed interface.
+
+**Installing GUI support:**
+```bash
+# Install with GUI dependencies
+pip install -e ".[gui]"
+
+# Or install PySide6 separately
+pip install PySide6
+```
+
+**Running the GUI:**
+```bash
+flextc-gui
+```
+
+**GUI Features:**
+- **Encoder Tab**: Generate timecode files with visual controls for all parameters
+  - Duration input (supports all formats: `5m`, `1:30`, `2h30m`, `7h6m5s4f`)
+  - Optional start timecode
+  - Frame rate selection (23.98, 24, 25, 29.97, 30 fps)
+  - Drop-frame mode toggle
+  - Countdown mode toggle
+  - Sample rate and amplitude controls
+  - Auto-generated or custom output filenames
+  - Progress indication during encoding
+
+- **Decoder Tab**: Analyze timecode files
+  - File browser for WAV files
+  - Auto-detection of frame rate and direction
+  - Results table showing start/end timecodes, duration, and format info
+
+**About Qt/PySide6:**
+- PySide6 is the official Python binding for Qt (a mature C++ GUI framework)
+- **No additional tools required** - you don't need Qt Creator or any separate IDE
+- The GUI code is pure Python and imports your existing `encoder.py` and `decoder.py` modules directly
+- Applications run natively on Windows and Mac with the platform's look and feel
+- Packaging for distribution is done with Python tools (see below)
 
 **File decoding output:**
 ```
@@ -219,10 +287,10 @@ The decoder can broadcast decoded timecode via OSC (Open Sound Control) for inte
 
 ```bash
 # Broadcast timecode via OSC to localhost
-ttrrtt-decode -d 2 -c 1 --osc --osc-address 127.0.0.1
+flextc-decode -d 2 -c 1 --osc --osc-address 127.0.0.1
 
 # Broadcast to a specific IP and port
-ttrrtt-decode --osc --osc-address 192.168.1.100 --osc-port 9999
+flextc-decode --osc --osc-address 192.168.1.100 --osc-port 9999
 ```
 
 **OSC Options:**
@@ -231,8 +299,8 @@ ttrrtt-decode --osc --osc-address 192.168.1.100 --osc-port 9999
 - `--osc-port` - UDP port (default: 9988)
 
 **OSC Paths:**
-- `/ttrrtt/ltc` - Sent when counting up (standard SMPTE mode)
-- `/ttrrtt/count` - Sent when counting down (countdown mode)
+- `/flextc/ltc` - Sent when counting up (standard SMPTE mode)
+- `/flextc/count` - Sent when counting down (countdown mode)
 
 **Message Format:** Single string argument in format `HH:MM:SS:FF` or `HH:MM:SS;FF` (for drop-frame).
 
@@ -254,14 +322,16 @@ ttrrtt-decode --osc --osc-address 192.168.1.100 --osc-port 9999
 
 ## Tested With
 
-The following hardware and software have been tested with TTRRTT-generated timecode:
+The following hardware and software have been tested with FlexTC-generated timecode:
 
 | Hardware/Software | Notes |
 |-------------------|-------|
-| **Horita Timecode Reader** | Reads bidirectional timecode up to 24 hours |
-| **Brainstorm Distripalyzer** | Reads forward timecode up to 24 hours |
-| **Horae** | All formats supported |
-| **TouchDesigner** | All formats supported |
+| **FlexTC Decoder** | Reads bi-directional timecode up to hour 639 (using extended user bits as noted) |
+| **TouchDesigner** | Reads bi-directional timecode up to hour 39 |
+| **Horae** | Reads bi-directional timecode up to hour 39 |
+| **Brainstorm SR-112 Distripalyzer** | Reads forward timecode up to hour 23 |
+| **GrandMA3** | Reads bi-directional timecode up to hour 39 (hour 24-39 represented as 1.1 to 1.15) |
+| **Horita TR-100 Reader** | Reads bi-directional timecode up to hour 23 |
 
 If you've tested with other equipment, please submit a PR to add it to this list.
 
@@ -276,6 +346,27 @@ This ensures:
 - Guaranteed clock recovery (minimum one transition per bit)
 - DC-free encoding (balanced signal)
 - Robust to polarity inversion
+
+### Waveform Types
+
+The encoder supports two waveform types for the LTC audio signal:
+
+| Waveform | Description | Rise Time | Use Case |
+|----------|-------------|-----------|----------|
+| **Sine** | Smooth sinusoidal transitions | ~25μs | Default; broadcast-friendly, reduces harmonics |
+| **Square** | Instant transitions between levels | ~1μs | Traditional for hardware LTC generators |
+
+**Sine Wave** (default):
+- Smoothed transitions reduce high-frequency harmonics
+- Better suited for broadcast transmission and analog systems
+- Maintains identical zero-crossing timing for decoder compatibility
+
+**Square Wave** (`--square` option):
+- Produces a clean digital signal with sharp transitions
+- Ideal for direct connection to equipment expecting digital LTC
+- Contains more harmonic content due to sharp edges
+
+Both waveforms produce identical timecode data - the only difference is the spectral content of the audio signal. Modern LTC decoders work reliably with either waveform type.
 
 ### Decoder Algorithm
 1. Detect edges (zero-crossings) in audio signal
@@ -329,7 +420,7 @@ In all cases, the biphase decoder is reset while preserving frame rate knowledge
 Enable verbose logging to see state transitions:
 
 ```bash
-ttrrtt-decode -v
+flextc-decode -v
 ```
 
 Key log messages:

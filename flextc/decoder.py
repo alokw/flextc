@@ -2,7 +2,7 @@
 SMPTE/LTC Decoder with Countdown Support
 
 Decodes SMPTE/LTC audio and detects whether it's counting up or down.
-Supports both standard SMPTE timecode and TTRRTT countdown mode.
+Supports both standard SMPTE timecode and FlexTC countdown mode.
 """
 
 import argparse
@@ -16,8 +16,8 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 
-from ttrrtt.smpte_packet import Timecode, FrameRate
-from ttrrtt.biphase import BiphaseMDecoder
+from flextc.smpte_packet import Timecode, FrameRate
+from flextc.biphase import BiphaseMDecoder
 
 # Module-level logger
 _logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ class OSCBroadcaster:
     OSC broadcaster for sending timecode data.
 
     Broadcasts timecode as a string in the format "HH:MM:SS:FF" or "HH:MM:SS;FF" (for drop-frame).
-    Uses the path /ttrrtt/ltc or /ttrrtt/count based on direction.
+    Uses the path /flextc/ltc or /flextc/count based on direction.
     """
 
     def __init__(self, address: str = "255.255.255.255", port: int = 9988):
@@ -85,7 +85,7 @@ class OSCBroadcaster:
             tc_string = f"{tc.hours:02d}:{tc.minutes:02d}:{tc.seconds:02d}{separator}{tc.frames:02d}"
 
             # Determine OSC path based on direction
-            path = "/ttrrtt/ltc" if tc.count_up else "/ttrrtt/count"
+            path = "/flextc/ltc" if tc.count_up else "/flextc/count"
 
             # Send OSC message
             from pythonosc import udp_client
@@ -531,6 +531,7 @@ def detect_frame_rate(
     1. Trying each candidate frame rate with the biphase decoder
     2. Counting how many valid timecodes are produced
     3. Checking which frame rate's biphase timing produces the most consistent results
+    4. Also tries inverted polarity for compatibility with different encoders
 
     Args:
         samples: Audio samples
@@ -554,41 +555,46 @@ def detect_frame_rate(
     best_rate = 30.0
     best_score = -1
 
-    for test_rate, bit10_drop, bit11_color in frame_rate_configs:
-        decoder = BiphaseMDecoder(sample_rate, test_rate)
-        frames = decoder.process(samples.copy())
+    # Try both normal and inverted polarity
+    for inverted in (False, True):
+        test_samples = -samples if inverted else samples
 
-        if not frames:
-            continue
+        for test_rate, bit10_drop, bit11_color in frame_rate_configs:
+            decoder = BiphaseMDecoder(sample_rate, test_rate)
+            frames = decoder.process(test_samples.copy())
 
-        # Analyze the decoded frames
-        matching_bits = 0
-        valid_timecodes = 0
-
-        for i in range(min(len(frames), 50)):
-            frame_bits = frames[i]
-            if len(frame_bits) < 80:
+            if not frames:
                 continue
 
-            # Check if bits 10 and 11 match what we expect for this rate
-            actual_bit10 = frame_bits[10]
-            actual_bit11 = frame_bits[11]
+            # Analyze the decoded frames
+            matching_bits = 0
+            valid_timecodes = 0
 
-            if actual_bit10 == (1 if bit10_drop else 0) and actual_bit11 == (1 if bit11_color else 0):
-                matching_bits += 1
+            for i in range(min(len(frames), 50)):
+                frame_bits = frames[i]
+                if len(frame_bits) < 80:
+                    continue
 
-            # Also count valid timecodes
-            tc = Timecode.decode_80bit(frame_bits)
-            if tc:
-                valid_timecodes += 1
+                # Check if bits 10 and 11 match what we expect for this rate
+                actual_bit10 = frame_bits[10]
+                actual_bit11 = frame_bits[11]
 
-        # Score: prioritize matching bits, then valid timecode count
-        # This way, if 25fps input has bit11=1, it will score highest for 25.0 config
-        score = matching_bits * 100 + valid_timecodes
+                if actual_bit10 == (1 if bit10_drop else 0) and actual_bit11 == (1 if bit11_color else 0):
+                    matching_bits += 1
 
-        if score > best_score:
-            best_score = score
-            best_rate = test_rate
+                # Also count valid timecodes
+                tc = Timecode.decode_80bit(frame_bits)
+                if tc:
+                    valid_timecodes += 1
+
+            # Score: prioritize matching bits, then valid timecode count
+            # Inverted gets slightly lower score to prefer normal polarity when equal
+            polarity_penalty = 0 if not inverted else 10
+            score = matching_bits * 100 + valid_timecodes - polarity_penalty
+
+            if score > best_score:
+                best_score = score
+                best_rate = test_rate
 
     return best_rate
 
@@ -627,10 +633,28 @@ def decode_file(
         all_samples = signal.resample(all_samples, int(len(all_samples) * sample_rate / sr))
         sr = sample_rate
 
-    # Auto-detect frame rate from the beginning if not specified
+    # Auto-detect frame rate and polarity from the beginning if not specified
     start_samples = all_samples[:int(sr * 2)]
     if frame_rate is None:
         frame_rate = detect_frame_rate(start_samples, sr)
+
+    # Detect polarity by trying both and seeing which produces MORE valid timecodes
+    use_inverted = False
+    test_decoder = BiphaseMDecoder(sr, frame_rate)
+    test_frames_normal = test_decoder.process(start_samples.copy())
+    valid_count_normal = sum(1 for fb in test_frames_normal if Timecode.decode_80bit(fb))
+
+    test_decoder.reset()
+    test_frames_inverted = test_decoder.process(-start_samples.copy())
+    valid_count_inverted = sum(1 for fb in test_frames_inverted if Timecode.decode_80bit(fb))
+
+    # Use the polarity that produces more valid timecodes
+    if valid_count_inverted > valid_count_normal:
+        use_inverted = True
+
+    # Apply detected polarity if needed
+    if use_inverted:
+        all_samples = -all_samples
 
     # Process the file in chunks to maintain biphase decoder sync
     decoder = BiphaseMDecoder(sr, frame_rate)
@@ -825,7 +849,7 @@ Direction is indicated by bit 60:
         osc_broadcaster = OSCBroadcaster(address=args.osc_address, port=args.osc_port)
         osc_broadcaster.enable()
         print(f"OSC broadcasting: {args.osc_address}:{args.osc_port}")
-        print(f"  Paths: /ttrrtt/ltc, /ttrrtt/count")
+        print(f"  Paths: /flextc/ltc, /flextc/count")
         print("-" * 40)
 
     decoder = Decoder(

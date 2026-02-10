@@ -1,5 +1,5 @@
 """
-TTRRTT - SMPTE-Compatible Bidirectional Timecode
+FlexTC - SMPTE-Compatible Bidirectional Timecode
 A SMPTE/LTC-compatible timecode system with countdown support.
 """
 

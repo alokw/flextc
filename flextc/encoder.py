@@ -3,7 +3,7 @@ SMPTE/LTC Encoder with Countdown Support
 
 Generates SMPTE-compatible audio files with either:
 - Standard timecode (counting up)
-- Countdown timecode (counting down) - TTRRTT countdown mode
+- Countdown timecode (counting down) - FlexTC countdown mode
 
 Both modes produce valid SMPTE/LTC that can be read by standard decoders.
 The direction is indicated by bit 60 of the frame.
@@ -12,13 +12,13 @@ The direction is indicated by bit 60 of the frame.
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Literal
 
 import numpy as np
 import soundfile as sf
 
-from ttrrtt.smpte_packet import Timecode, FrameRate, generate_countdown, generate_countup
-from ttrrtt.biphase import BiphaseMEncoder
+from flextc.smpte_packet import Timecode, FrameRate, generate_countdown, generate_countup
+from flextc.biphase import BiphaseMEncoder, WaveformType
 
 
 class Encoder:
@@ -34,6 +34,7 @@ class Encoder:
         frame_rate: float = 30.0,
         amplitude: float = 0.7,
         drop_frame: bool = False,
+        waveform: WaveformType = "sine",
     ):
         """
         Initialize encoder.
@@ -43,10 +44,12 @@ class Encoder:
             frame_rate: Frame rate (fps) - 24, 25, 29.97, or 30
             amplitude: Output amplitude (0.0 to 1.0)
             drop_frame: Enable drop-frame mode (for 29.97 or 30 fps)
+            waveform: Waveform type - "square" (fast rise time) or "sine" (broadcast-friendly, default)
         """
         self.sample_rate = sample_rate
         self.frame_rate = frame_rate
         self.amplitude = amplitude
+        self.waveform = waveform
 
         # Map frame rate to enum
         if abs(frame_rate - 23.98) < 0.01:
@@ -70,7 +73,7 @@ class Encoder:
         else:
             self.frame_rate_enum = FrameRate.FPS_30
 
-        self.biphase = BiphaseMEncoder(sample_rate, frame_rate)
+        self.biphase = BiphaseMEncoder(sample_rate, frame_rate, waveform)
 
     @property
     def _fps_for_calc(self) -> int:
@@ -246,10 +249,16 @@ def parse_timecode(time_str: str) -> tuple:
     """
     time_str = time_str.strip()
 
-    # HH:MM:SS:FF format
+    # HH:MM:SS:FF or MM:SS format
     if ':' in time_str:
         parts = time_str.split(':')
-        if len(parts) == 3:
+        if len(parts) == 2:
+            # MM:SS (minutes:seconds) - common duration format
+            hours = 0
+            minutes = int(parts[0])
+            seconds = int(parts[1])
+            frames = 0
+        elif len(parts) == 3:
             # HH:MM:SS
             hours = int(parts[0])
             minutes = int(parts[1])
@@ -384,6 +393,11 @@ For countdown mode, bit 60 indicates reverse direction.
         help="Amplitude 0.0-1.0 (default: 0.7)",
     )
     parser.add_argument(
+        "--square",
+        action="store_true",
+        help="Use square waveform (~1μs rise time) instead of sine (broadcast-friendly, ~25μs, default)",
+    )
+    parser.add_argument(
         "--countdown",
         action="store_true",
         help="Generate countdown timecode (default is count-up/standard SMPTE)",
@@ -414,6 +428,10 @@ For countdown mode, bit 60 indicates reverse direction.
     if args.start:
         try:
             start_hours, start_minutes, start_seconds, start_frames = parse_timecode(args.start)
+            # Validate start hours (max 639 for extended hours encoding)
+            if start_hours > 639:
+                print(f"Error: Start timecode hours cannot exceed 639 (got {start_hours})", file=sys.stderr)
+                sys.exit(1)
         except Exception as e:
             print(f"Error parsing start timecode: {e}", file=sys.stderr)
             sys.exit(1)
@@ -485,6 +503,7 @@ For countdown mode, bit 60 indicates reverse direction.
         frame_rate=args.frame_rate,
         amplitude=args.amplitude,
         drop_frame=args.drop_frame,
+        waveform="square" if args.square else "sine",
     )
 
     try:
