@@ -25,6 +25,7 @@ from PySide6.QtGui import QIcon, QPalette, QColor
 
 from flextc.gui.encoder_tab import EncoderTab
 from flextc.gui.decoder_tab import DecoderTab
+from flextc.gui.live_decoder_tab import LiveDecoderTab
 
 
 class FlexTCMainWindow(QMainWindow):
@@ -57,10 +58,12 @@ class FlexTCMainWindow(QMainWindow):
         # Create encoder and decoder tabs
         self.encoder_tab = EncoderTab()
         self.decoder_tab = DecoderTab()
+        self.live_decoder_tab = LiveDecoderTab()
 
         # Add tabs
         self.tabs.addTab(self.encoder_tab, "Encoder")
-        self.tabs.addTab(self.decoder_tab, "Decoder")
+        self.tabs.addTab(self.decoder_tab, "Decode File")
+        self.tabs.addTab(self.live_decoder_tab, "Decode Input")
 
         layout.addWidget(self.tabs)
 

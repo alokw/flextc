@@ -48,8 +48,9 @@ Each 80-bit SMPTE/LTC frame contains:
 | 24-26 | Seconds tens | Seconds // 10 (BCD) |
 | 32-35 | Minutes units | Minutes % 10 (BCD) |
 | 40-42 | Minutes tens | Minutes // 10 (BCD) |
-| 48-51 | Hours units | Hours % 10 (BCD) |
-| 56-57 | Hours tens | Hours // 10 (BCD) |
+| 48-51 | Hours units | Hours % 10 (LSB first, bit 48 = LSB) |
+| 52-53 | Hours padding | Set to 00 (reserved) |
+| 54-57 | Hours tens | Hours // 10 (FlexTC extended, see below) |
 | 58 | Clock flag | External clock sync |
 | 59 | BGF / Polarity | Binary group flag / polarity correction |
 | 60 | **Direction flag** | **0=count-up, 1=countdown** |
@@ -66,34 +67,57 @@ Bit 60 is the first bit of user bits field 8, which is reserved for future use i
 
 **Note:** When decoding from files, the direction is determined by comparing the first and last timecode values, not solely by bit 60. This ensures compatibility with standard LTC files that may have bit 60 set to arbitrary values.
 
-### Beyond 24-Hour Encoding
+### Extended Hours Encoding (Beyond SMPTE 39-Hour Limit)
 
 The SMPTE specification uses only 2 bits for the "hours tens" digit (bits 56-57), which can represent values 0-3, allowing encoding of 0-39 hours in standard SMPTE.
 
-FlexTC implements an **extended hours encoding** using bits 52-55 (user bits field 7) to support up to 639 hours while remaining fully compatible with standard SMPTE decoders for hours 0-39.
+FlexTC implements a **robust extended hours encoding** using bits 54-57 to support up to **159 hours** while maintaining SMPTE compatibility for hours 0-39 and reducing bit error impact at high hour values.
 
 #### Encoding Scheme
 
-| Hours Range | Encoding Mode | Bits 52-55 | Bits 56-57 | Standard Decoder Sees |
-|-------------|---------------|------------|------------|----------------------|
-| 0-39 | BCD (SMPTE compatible) | 0000 | 0-3 | Correct hours ✓ |
-| 40-639 | Binary (FlexTC extended) | Non-zero | 0-3 (lower bits of tens) | Incorrect hours |
+**Bits 48-51**: Units digit (hours % 10), LSB first (bit 48 is LSB)
+**Bits 52-53**: Padding (set to 00)
+**Bits 54-57**: Tens digit (hours // 10), stored in LSB to MSB order: 56, 57, 54, 55
 
-**How it works:**
-- **Bits 48-51**: Units digit (0-9), same for all modes
-- **Bits 52-55**: Upper bits of tens value (bits 2-5 of `hours // 10`)
-- **Bits 56-57**: Lower 2 bits of tens value (bits 0-1 of `hours // 10`)
+| Bit Position | Stores |
+|--------------|--------|
+| Bit 54 | Bit 2 of tens |
+| Bit 55 | Bit 3 of tens (MSB) |
+| Bit 56 | Bit 0 of tens (LSB) |
+| Bit 57 | Bit 1 of tens |
 
-For hours 0-39, tens is 0-3, so bits 52-55 are all zero → SMPTE compatible.
-For hours 40-639, tens is 4-63, so bits 52-55 are non-zero → Extended mode.
+**Decoding formula:**
+```
+hour_units = sum(bits[48 + i] << i for i in range(4))  # LSB first
+hour_tens = bits[56] | (bits[57] << 1) | (bits[54] << 2) | (bits[55] << 3)
+hours = hour_tens * 10 + hour_units
+```
 
-**Decoding formula:** `hours = tens × 10 + units` where `tens = bits[52-55] << 2 | bits[56-57]`
+#### Example: Hour 55
+- hour_units = 5, hour_tens = 5
+- Bits 48-51: `1010` (5 in LSB-first binary: bit 48=1, bit 49=0, bit 50=1, bit 51=0)
+- Bits 52-53: `00`
+- Bits 54-57: `0101` (5 in 4-bit binary with special ordering)
+  - bit 54 = (5 >> 2) & 1 = 1
+  - bit 55 = (5 >> 3) & 1 = 0
+  - bit 56 = 5 & 1 = 1
+  - bit 57 = (5 >> 1) & 1 = 0
+- Decoding: hour_tens = 1 | (0<<1) | (1<<2) | (0<<3) = 5 ✓
 
-#### Compatibility
+#### Compatibility & Robustness
 
-**Hours 0-39**: Fully compatible with all SMPTE decoders (bits 52-55 = 0000)
+| Hours Range | Encoding Mode | Standard Decoder Sees |
+|-------------|---------------|----------------------|
+| 0-39 | BCD (SMPTE compatible) | Correct hours ✓ |
+| 40-159 | Binary (FlexTC extended) | Incorrect hours |
 
-**Hours 40-639**: Require FlexTC-aware decoder (or another decoder that also looks at bits 52-57 for extended hours); standard SMPTE decoders see only the lower 2 bits of the tens value
+**Hours 0-39**: Fully compatible with all SMPTE decoders (bits 54-57 read as BCD tens)
+**Hours 40-159**: Require FlexTC-aware decoder; standard SMPTE decoders read only lower 2 bits
+
+**Bit Error Robustness:**
+With 4-bit tens encoding (max 159 hours):
+- Maximum single-bit error: ±80 hours (vs ±320 hours with 6-bit encoding)
+- This makes high hour values (100+) much more reliable in real-world conditions
 
 ## Usage
 
@@ -326,7 +350,7 @@ The following hardware and software have been tested with FlexTC-generated timec
 
 | Hardware/Software | Notes |
 |-------------------|-------|
-| **FlexTC Decoder** | Reads bi-directional timecode up to hour 639 (using extended user bits as noted) |
+| **FlexTC Decoder** | Reads bi-directional timecode up to hour 159 (using extended 4-bit tens encoding) |
 | **TouchDesigner** | Reads bi-directional timecode up to hour 39 |
 | **Horae** | Reads bi-directional timecode up to hour 39 |
 | **Brainstorm SR-112 Distripalyzer** | Reads forward timecode up to hour 23 |

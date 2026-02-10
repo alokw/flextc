@@ -85,15 +85,18 @@ class Timecode:
 
     def __post_init__(self):
         """Validate and normalize timecode values."""
-        # Note: We support extended hours encoding up to 639 hours using bits 48-57.
-        # Bits 48-51: units (hours % 10)
-        # Bits 52-57: tens (hours // 10), where bits 52-55 are upper bits and bits 56-57 are lower bits
+        # Note: We support extended hours encoding up to 159 hours using bits 48-57.
+        # Bits 48-51: units (hours % 10), LSB first (bit 48 is LSB)
+        # Bits 52-53: padding (set to 00 for compatibility)
+        # Bits 54-57: tens digit (0-15), LSB to MSB order: 56, 57, 54, 55
         # Hours 0-39 remain fully compatible with standard SMPTE decoders (bits 52-55 = 0000).
-        # Hours 40-639 use FlexTC extended mode (bits 52-55 non-zero).
+        # Hours 40-159 use FlexTC extended mode (bits 54-55 non-zero).
+        # Hours > 159 are clamped to 159 to handle bit errors gracefully
         if self.hours < 0:
-            raise ValueError(f"Hours cannot be negative (got {self.hours})")
-        if self.hours > 639:
-            raise ValueError(f"Hours cannot exceed 639 (got {self.hours})")
+            self.hours = 0
+        elif self.hours > 159:
+            # Clamp to max instead of raising - allows recovery from bit errors
+            self.hours = 159
         self.minutes = max(0, min(self.minutes, 59))
         self.seconds = max(0, min(self.seconds, 59))
 
@@ -314,35 +317,35 @@ class Timecode:
         for i in range(4):
             bits[44 + i] = (self.user_bits[5] >> i) & 1
 
-        # Hours encoding (bits 48-57)
-        # Bits 48-51: units digit (hours % 10), LSB first
-        # Bits 52-57: tens digit (hours // 10), can be 0-102
-        #   - Bits 52-55: upper bits of tens (values >= 4 indicate extended mode)
-        #   - Bits 56-57: lower 2 bits of tens (SMPTE BCD position, LSB first)
+        # Hours encoding (bits 48-57) - 4-bit tens for robustness (max 159 hours)
+        # Bits 48-51: units digit (hours % 10), LSB first (bit 48 is LSB)
+        # Bits 52-53: padding (set to 00)
+        # Bits 54-57: tens digit (0-15), LSB to MSB order: 56, 57, 54, 55
         #
         # For SMPTE compatibility (hours 0-39):
-        #   - Bits 48-51: BCD units (0-9)
-        #   - Bits 56-57: BCD tens (0-3)
-        #   - Bits 52-55: 0000 (indicates standard SMPTE)
+        #   - Bits 48-51: BCD units (0-9), LSB first
+        #   - Bits 54-57: BCD tens (0-3), LSB first on bit 56
+        #   - e.g., hour 03: bits 54-57 = 1100, hour 39: bits 54-57 = 1001 (LSB first)
+        #   - Standard SMPTE decoders read bits 56-57 only (lower 2 bits)
         #
-        # For extended mode (hours 40-1023):
-        #   - Bits 52-55: non-zero (upper bits of tens value)
-        #   - Bits 56-57: lower 2 bits of tens value
-        #   - Standard SMPTE decoders read bits 56-57 only, showing incorrect values
+        # For extended mode (hours 40-159):
+        #   - Bits 54-57 store the full tens value (4-15) in binary, LSB first
         hour_units = self.hours % 10
         hour_tens = self.hours // 10
 
-        # Bits 48-51: units (LSB first)
+        # Bits 48-51: units (LSB first, bit 48 is LSB)
         for i in range(4):
             bits[48 + i] = (hour_units >> i) & 1
 
-        # Bits 52-55: upper bits of tens (LSB first, bits 2-5 of tens value)
-        for i in range(4):
-            bits[52 + i] = ((hour_tens >> (i + 2)) & 1)
+        # Bits 52-53: padding (set to 00)
+        bits[52] = 0
+        bits[53] = 0
 
-        # Bits 56-57: lower 2 bits of tens (SMPTE BCD position, LSB first)
-        bits[56] = hour_tens & 1
-        bits[57] = (hour_tens >> 1) & 1
+        # Bits 54-57: tens digit, LSB to MSB order: 56, 57, 54, 55
+        bits[54] = (hour_tens >> 2) & 1  # bit 2 of tens
+        bits[55] = (hour_tens >> 3) & 1  # bit 3 of tens (MSB)
+        bits[56] = hour_tens & 1         # bit 0 of tens (LSB)
+        bits[57] = (hour_tens >> 1) & 1  # bit 1 of tens
 
         # Bit 58: Clock flag / Binary group flag 1 (set to 0 for arbitrary time origin)
         bits[58] = 0
@@ -433,21 +436,37 @@ class Timecode:
         # Extract seconds tens (bits 24-26)
         sec_tens = bits[24] | (bits[25] << 1) | (bits[26] << 2)
 
+        # Validate seconds range - reject if obviously invalid
+        seconds = sec_tens * 10 + sec_units
+        if seconds > 59:
+            return None
+
         # Extract minutes units (bits 32-35, LSB first)
         min_units = sum(bits[32 + i] << i for i in range(4))
 
         # Extract minutes tens (bits 40-42)
         min_tens = bits[40] | (bits[41] << 1) | (bits[42] << 2)
 
-        # Extract hours (bits 48-57)
-        # Bits 48-51: units digit (hours % 10), LSB first
-        # Bits 52-55: upper bits of tens (bits 2-5 of tens value), LSB first
-        # Bits 56-57: lower 2 bits of tens (SMPTE BCD position), LSB first
+        # Validate minutes range - reject if obviously invalid
+        minutes = min_tens * 10 + min_units
+        if minutes > 59:
+            return None
+
+        # Extract hours (bits 48-57) - 4-bit tens for robustness (max 159 hours)
+        # Bits 48-51: units digit (hours % 10), LSB first (bit 48 is LSB)
+        # Bits 52-53: padding (should be 00)
+        # Bits 54-57: tens digit, LSB to MSB order: 56, 57, 54, 55
         hour_units = sum(bits[48 + i] << i for i in range(4))
-        hour_tens_lower = bits[56] | (bits[57] << 1)
-        hour_tens_upper = sum(bits[52 + i] << (i + 2) for i in range(4))
-        hour_tens = hour_tens_lower | hour_tens_upper
+        hour_tens = bits[56] | (bits[57] << 1) | (bits[54] << 2) | (bits[55] << 3)
         hours = hour_tens * 10 + hour_units
+
+        # Validate hours - clamp to valid range instead of rejecting
+        # This allows recovery from bit errors in the audio stream
+        if hours > 159:
+            # Clamp to max value - the __post_init__ will handle this
+            hours = 159
+        elif hours < 0:
+            hours = 0
 
         # Extract direction flag (bit 60 - FlexTC extension)
         # Bit 60 = 0 means count up (standard SMPTE/LTC default)
@@ -472,8 +491,8 @@ class Timecode:
 
         return cls(
             hours=hours,
-            minutes=min_tens * 10 + min_units,
-            seconds=sec_tens * 10 + sec_units,
+            minutes=minutes,
+            seconds=seconds,
             frames=frame_tens * 10 + frame_units,
             frame_rate=frame_rate,
             count_up=count_up,

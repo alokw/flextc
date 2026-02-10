@@ -147,7 +147,7 @@ class Decoder:
         self._detection_buffer: List[np.ndarray] = []
         self._detection_buffer_samples = 0
         self._detection_threshold = sample_rate // 10  # 0.1 seconds of audio for detection
-        self._signal_loss_threshold = sample_rate * 0.2  # 200ms without data = signal lost (much faster recovery)
+        self._signal_loss_threshold = sample_rate * 0.5  # 500ms without data = signal lost (less aggressive)
         self._last_valid_sample_time: Optional[float] = None
         self._in_detection_mode = (frame_rate is None)
         self._last_signal_was_strong = False  # Track if we had strong signal in previous callback
@@ -161,6 +161,8 @@ class Decoder:
         self.packets_received = 0
         self._last_timecode_value = None  # For detecting stuck frames
         self._stuck_frame_count = 0  # Consecutive repeats of same timecode
+        self._last_valid_hour: Optional[int] = None  # For hour continuity checking
+        self._hour_confidence: int = 0  # Number of consecutive frames with same hour range
 
         # Audio stream
         self.stream: Optional[sd.InputStream] = None
@@ -169,7 +171,56 @@ class Decoder:
         # Last update time
         self.last_update_time: Optional[float] = None
 
-    def _process_frames(self, frames: List[List[int]]) -> tuple[bool, int]:
+    def _is_hour_plausible(self, hours: int) -> bool:
+        """
+        Check if an hour value is plausible given the history.
+
+        At high hour values (100+), bit errors in the upper bits can cause
+        large jumps. This check rejects obviously invalid hour values.
+
+        IMPORTANT: This should only reject CLEARLY impossible values.
+        Legitimate timecode jumps (like seeking) should always be allowed.
+
+        Args:
+            hours: The hour value to check
+
+        Returns:
+            True if the hour is plausible, False if it's likely a bit error
+        """
+        if self._last_valid_hour is None:
+            # No history, accept any valid value
+            return True
+
+        # Calculate the difference
+        hour_diff = abs(hours - self._last_valid_hour)
+
+        # With 4-bit tens encoding (max 159), max single-bit error is +/- 60 hours
+        # A jump of more than 80 hours is definitely a bit error
+        if hour_diff > 80:
+            if self.debug:
+                _logger.debug(f"Hour jump > 80 (likely bit error): {self._last_valid_hour} -> {hours}")
+            return False
+
+        # For high hours (80+), check for specific bit error patterns
+        # With 4-bit tens: bits 54-55 store upper 2 bits, bits 56-57 store lower 2 bits
+        # Single bit flips in upper 2 bits cause jumps of 40, 60, or combinations
+        if self._last_valid_hour >= 80:
+            # Check for specific bit error patterns in 4-bit tens encoding
+            # - Bit 54 flip (bit 2 of tens): +/- 40 hours
+            # - Bit 55 flip (bit 3 of tens): +/- 60 hours
+            # - Bit 56 flip (bit 0 of tens): +/- 10 hours
+            # - Bit 57 flip (bit 1 of tens): +/- 20 hours
+            bit_error_patterns = (10, 20, 30, 40, 50, 60, 70)
+            if hour_diff in bit_error_patterns:
+                # Check if units digit is the same (suggests only tens bits affected)
+                if hours % 10 == self._last_valid_hour % 10:
+                    if self.debug:
+                        _logger.debug(f"Hour jump with same units (likely bit error): {self._last_valid_hour} -> {hours} (diff: {hour_diff})")
+                    return False
+
+        return True
+
+    def _process_frames(self, frames: List[List[int]]) -> tuple[bool, int, int]:
         """
         Process decoded frames and extract timecode.
 
@@ -177,14 +228,30 @@ class Decoder:
             frames: List of 80-bit frame representations
 
         Returns:
-            Tuple of (timecode_progressed: bool, valid_timecode_count: int)
+            Tuple of (timecode_progressed: bool, valid_timecode_count: int, frames_rejected_for_hour: int)
         """
         timecode_progressed = False
         valid_timecode_count = 0
+        frames_rejected_for_hour = 0  # Track frames rejected due to hour check
+
         for frame_bits in frames:
-            timecode = Timecode.decode_80bit(frame_bits)
+            try:
+                timecode = Timecode.decode_80bit(frame_bits)
+            except Exception as e:
+                # Skip invalid frames - could be bit errors in the stream
+                if self.debug:
+                    _logger.debug(f"Failed to decode frame: {e}")
+                continue
 
             if timecode:
+                # Check if the hour is plausible given our history
+                if not self._is_hour_plausible(timecode.hours):
+                    # Skip this frame - likely a bit error
+                    frames_rejected_for_hour += 1
+                    if self.debug:
+                        _logger.debug(f"Skipping frame with implausible hour: {timecode.hours}")
+                    continue
+
                 valid_timecode_count += 1
                 # Check if timecode is stuck (repeating same value)
                 tc_value = (timecode.hours, timecode.minutes, timecode.seconds, timecode.frames)
@@ -199,13 +266,37 @@ class Decoder:
                 self.packets_received += 1
                 self.last_update_time = time.time()
 
+                # Update hour confidence tracking
+                if self._last_valid_hour is not None:
+                    if self._last_valid_hour // 10 == timecode.hours // 10:
+                        # Same tens range, increase confidence
+                        self._hour_confidence += 1
+                    else:
+                        # Hour tens changed, reset confidence
+                        self._hour_confidence = 1
+                else:
+                    self._hour_confidence = 1
+                self._last_valid_hour = timecode.hours
+
                 if self.callback:
                     self.callback(timecode)
 
-        return timecode_progressed, valid_timecode_count
+        return timecode_progressed, valid_timecode_count, frames_rejected_for_hour
 
     def _audio_callback(self, indata: np.ndarray, frames, time_info, status):
         """Called by sounddevice for each audio block."""
+        try:
+            self._audio_callback_impl(indata, frames, time_info, status)
+        except Exception as e:
+            # Log error but don't crash - audio callback must not raise exceptions
+            _logger.error(f"Error in audio callback: {e}")
+            # Reset state to recover
+            self._in_detection_mode = True
+            self.biphase = None
+            self.current_timecode = None
+
+    def _audio_callback_impl(self, indata: np.ndarray, frames, time_info, status):
+        """Implementation of audio callback - wrapped in try/except by _audio_callback."""
         if status:
             _logger.warning(f"Audio status: {status}")
 
@@ -228,10 +319,10 @@ class Decoder:
         # - Locked mode: have frame rate, processing timecodes
         # On ANY anomaly (signal loss, discontinuity), go back to detection mode
 
-        # Check for signal loss - 200ms timeout (aggressive for faster recovery)
+        # Check for signal loss - 500ms timeout (less aggressive for stability)
         if (not self._in_detection_mode and self.biphase is not None and
             self._last_valid_sample_time is not None and
-            current_time - self._last_valid_sample_time > 0.2):
+            current_time - self._last_valid_sample_time > 0.5):
             # Signal lost - immediately enter detection mode
             self._in_detection_mode = True
             self.biphase = None
@@ -240,9 +331,13 @@ class Decoder:
             self._last_valid_sample_time = None
             self._stuck_frame_count = 0
             self._last_timecode_value = None
+            self._last_valid_hour = None  # Reset hour tracking to allow new hour values
+            self._hour_confidence = 0
             self._detection_buffer.clear()
             self._detection_buffer_samples = 0
-            _logger.warning("[SIGNAL LOSS] Entering detection mode")
+            # Don't log warning every time - too noisy
+            if self.debug:
+                _logger.warning("[SIGNAL LOSS] Entering detection mode")
             # Fall through to detection mode
 
         # If in detection mode, accumulate samples for frame rate detection
@@ -312,35 +407,40 @@ class Decoder:
                         # Process buffered samples
                         decoded_frames = self.biphase.process(test_buffer)
 
-                        # Check if we got valid timecodes
-                        valid_timecode_found = False
+                        # Check if we got any frames with valid sync (even if timecode is invalid)
+                        # This is more lenient than requiring valid timecodes
+                        valid_frame_found = False
                         for frame_bits in decoded_frames:
-                            tc = Timecode.decode_80bit(frame_bits)
-                            if tc:
-                                valid_timecode_found = True
-                                if self.debug:
-                                    _logger.debug(f"Detection: found valid timecode {tc} at offset {offset}")
-                                break
+                            if len(frame_bits) >= 80:
+                                # Check for valid sync pattern (bits 64-79 must start with 0011)
+                                sync_bits = frame_bits[64:68]
+                                if sync_bits == [0, 0, 1, 1]:
+                                    valid_frame_found = True
+                                    if self.debug:
+                                        _logger.debug(f"Detection: found valid sync at offset {offset}")
+                                    break
 
-                        if valid_timecode_found:
-                            self._in_detection_mode = False
-                            self._last_valid_sample_time = current_time
-                            self._stuck_frame_count = 0
-                            self._last_timecode_value = None
-                            _logger.info(f"[DETECTION] Successfully locked on signal! (offset: {offset})")
-                            # Process the frames we already decoded
+                        if valid_frame_found:
+                            # Try to get at least one valid timecode
                             self._process_frames(decoded_frames)
-                            # Clear buffer after success
-                            self._detection_buffer.clear()
-                            self._detection_buffer_samples = 0
-                            return
+                            # If we got any valid timecode, exit detection mode
+                            if self.current_timecode is not None:
+                                self._in_detection_mode = False
+                                self._last_valid_sample_time = current_time
+                                self._stuck_frame_count = 0
+                                self._last_timecode_value = None
+                                _logger.info(f"[DETECTION] Successfully locked on signal! (offset: {offset})")
+                                # Clear buffer after success
+                                self._detection_buffer.clear()
+                                self._detection_buffer_samples = 0
+                                return
 
                     # None of the offsets worked - clear some buffer and try again
                     self._detection_buffer.clear()
                     self._detection_buffer_samples = 0
                     self.biphase = None
                     self.frame_rate = None
-                    _logger.warning("[DETECTION] No valid timecodes found at any offset, retrying...")
+                    _logger.warning("[DETECTION] No valid frames found at any offset, retrying...")
                     return
 
                 # Normal detection path - try with current buffer
@@ -352,28 +452,30 @@ class Decoder:
                 # Process buffered samples
                 decoded_frames = self.biphase.process(combined)
 
-                # Check if we got valid timecodes
-                valid_timecode_found = False
+                # Try to get at least one valid timecode (more lenient - just need valid sync)
+                valid_frame_found = False
                 for frame_bits in decoded_frames:
-                    tc = Timecode.decode_80bit(frame_bits)
-                    if tc:
-                        valid_timecode_found = True
-                        if self.debug:
-                            _logger.debug(f"Detection: found valid timecode {tc}")
-                        break
+                    if len(frame_bits) >= 80:
+                        sync_bits = frame_bits[64:68]
+                        if sync_bits == [0, 0, 1, 1]:
+                            valid_frame_found = True
+                            if self.debug:
+                                _logger.debug(f"Detection: found valid sync")
+                            break
 
-                # Only exit detection mode if we found valid timecodes
-                if valid_timecode_found:
-                    self._in_detection_mode = False
-                    self._last_valid_sample_time = current_time
-                    self._stuck_frame_count = 0
-                    self._last_timecode_value = None
-                    _logger.info("[DETECTION] Successfully locked on signal!")
-                    # Process the frames we already decoded
+                if valid_frame_found:
+                    # Try to process frames - may get valid timecodes
                     self._process_frames(decoded_frames)
-                    # Clear buffer after success
-                    self._detection_buffer.clear()
-                    self._detection_buffer_samples = 0
+                    # If we got any valid timecode, exit detection mode
+                    if self.current_timecode is not None:
+                        self._in_detection_mode = False
+                        self._last_valid_sample_time = current_time
+                        self._stuck_frame_count = 0
+                        self._last_timecode_value = None
+                        _logger.info("[DETECTION] Successfully locked on signal!")
+                        # Clear buffer after success
+                        self._detection_buffer.clear()
+                        self._detection_buffer_samples = 0
                 else:
                     # No valid timecodes yet - keep accumulating, don't clear buffer
                     # Stay in detection mode but keep the decoder
@@ -395,7 +497,12 @@ class Decoder:
 
         # Process frames
         if decoded_frames:
-            timecode_progressed, valid_count = self._process_frames(decoded_frames)
+            timecode_progressed, valid_count, rejected_for_hour = self._process_frames(decoded_frames)
+
+            # If we're getting frames but rejecting some for hour issues, still consider
+            # the signal valid - update _last_valid_sample_time to avoid signal loss
+            if valid_count > 0 or rejected_for_hour > 0:
+                self._last_valid_sample_time = current_time
 
             # Check for stuck frames - same timecode repeating without progress
             # If we see the same frame 5+ times with strong signal, decoder is corrupted
@@ -416,8 +523,10 @@ class Decoder:
                     self._invalid_frame_count = 0
                 self._invalid_frame_count += 1
 
-                # After 3 consecutive callbacks with frames but no valid timecodes, reset
-                if self._invalid_frame_count >= 3:
+                # After MORE consecutive callbacks with frames but no valid timecodes, reset
+                # Increased from 3 to 10 to be more tolerant at high hours where bit errors
+                # in the hour field are more common
+                if self._invalid_frame_count >= 10:
                     self.biphase.reset()
                     self._stuck_frame_count = 0
                     self._last_timecode_value = None
@@ -429,7 +538,6 @@ class Decoder:
             if valid_count > 0:
                 if hasattr(self, '_invalid_frame_count'):
                     self._invalid_frame_count = 0
-                self._last_valid_sample_time = current_time
         else:
             # No frames decoded even though signal is strong
             # This could mean the biphase decoder is corrupted or misaligned
@@ -454,7 +562,7 @@ class Decoder:
             if hasattr(self, '_empty_decode_count'):
                 self._empty_decode_count = 0
         # Note: We DON'T update _last_valid_sample_time on empty decodes
-        # This means 200ms with no valid frames = signal loss = enter detection mode
+        # This means 500ms with no valid frames = signal loss = enter detection mode
 
     def start(self):
         """Start decoding from audio input."""
