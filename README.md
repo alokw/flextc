@@ -21,7 +21,7 @@ Both modes produce valid SMPTE/LTC audio that can be read by standard decoders. 
 - **Extended Hours** - Support up to 159 hours (beyond standard SMPTE's 39-hour limit)
 - **Auto-Detection** - Automatic frame rate and sample rate detection
 - **Freewheeling** - Smooths out single-frame glitches through interpolation
-- **OSC Broadcasting** - Real-time timecode distribution via OSC
+- **OSC Re-Distribution** - Periodic Real-time timecode distribution via OSC as a string, for reference use
 - **GUI Interface** - Optional desktop GUI for encoding and decoding
 - **Broadcast-Friendly** - Sine waveform option reduces harmonics
 
@@ -136,7 +136,7 @@ flextc-decode --list-devices
 # Verbose output with statistics
 flextc-decode -v
 
-# Broadcast timecode via OSC
+# Decode and distribute timecode via OSC
 flextc-decode -d 2 -c 1 --osc --osc-address 127.0.0.1
 ```
 
@@ -179,23 +179,23 @@ All parameters from the CLI are available in the GUI, including frame rate, drop
 
 **Note:** Non-drop frame rates (23.98, 24, 30, 29.97 NDF) encode identically in bits 10-11. Decoders distinguish them by measuring actual bit timing from the audio.
 
-## OSC Broadcasting
+## OSC Re-Distribution
 
-The decoder can broadcast decoded timecode via OSC for integration with other systems. This allows software like show control systems, DAWs, or custom applications to receive and display the timecode.
+The decoder can send decoded timecode via OSC for integration with other systems. This allows software like show control systems, DAWs, or custom applications to receive and display the timecode.
 
-**Important:** OSC broadcasts are sent periodically (approximately every 100ms), not on every frame. This feature is intended for display and reference purposes only and should not be used for frame-accurate triggering or synchronization.
+**Important:** OSC re-distribution is sent periodically (approximately every 100ms), not on every frame. This feature is intended for display and reference purposes only and should not be used for frame-accurate triggering or synchronization.
 
 ```bash
-# Broadcast to localhost
+# Send to localhost
 flextc-decode --osc --osc-address 127.0.0.1
 
-# Broadcast to specific IP and port
+# Send to specific IP and port
 flextc-decode --osc --osc-address 192.168.1.100 --osc-port 9999
 ```
 
 **OSC Options:**
-- `--osc` - Enable OSC broadcasting
-- `--osc-address` - Target IP address (default: 255.255.255.255)
+- `--osc` - Enable OSC re-distribution
+- `--osc-address` - Target IP address (default: 127.0.0.1)
 - `--osc-port` - UDP port (default: 9988)
 
 **OSC Paths:**
@@ -328,6 +328,49 @@ Both waveforms produce identical timecode data - only the spectral content diffe
 | **GrandMA3** | Bi-directional, up to hour 39 |
 | **Horita TR-100** | Bi-directional, up to hour 23 |
 
+## Building Standalone Applications
+
+FlexTC GUI can be packaged as standalone applications for macOS and Windows using PyInstaller.
+
+### Prerequisites
+
+```bash
+# Install PyInstaller
+pip install pyinstaller
+```
+
+### Building on macOS
+
+```bash
+# Use the provided build script
+./build_mac.sh
+
+# Or build manually
+pyinstaller flextc_gui.spec
+
+# The output app bundle will be at: dist/FlexTC.app
+# To run: open dist/FlexTC.app
+```
+
+### Building on Windows
+
+```cmd
+# Use the provided build script
+build_windows.bat
+
+# Or build manually
+pyinstaller flextc_gui.spec
+
+# The output executable will be at: dist\FlexTC\FlexTC.exe
+```
+
+### Distribution
+
+- **macOS**: Create a ZIP archive of `dist/FlexTC.app` for distribution
+- **Windows**: Create a ZIP archive of the `dist/FlexTC` folder for distribution
+
+The standalone applications include all dependencies and do not require Python to be installed on the target system.
+
 ## Requirements
 
 - Python 3.9+
@@ -335,7 +378,7 @@ Both waveforms produce identical timecode data - only the spectral content diffe
 - soundfile
 - sounddevice
 - scipy (for file resampling)
-- python-osc (for OSC broadcasting)
+- python-osc (for OSC re-distribution)
 - PySide6 (for GUI, optional)
 
 ## License
