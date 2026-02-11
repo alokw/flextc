@@ -246,7 +246,7 @@ standard count-up timecode and countdown mode.</p>
 <li>Extended hours support (up to 159 hours)</li>
 <li>Auto frame rate detection</li>
 <li>Auto sample rate detection</li>
-<li>OSC broadcasting support</li>
+<li>OSC re-distribution support</li>
 </ul>
 
 <p><a href="https://github.com/alokw/flextc">https://github.com/alokw/flextc</a></p>
